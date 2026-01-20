@@ -1,5 +1,11 @@
+# Local uploads / data
+uploaded_pdfs/
+
+# Python
 venv/
 __pycache__/
-.env
 *.pyc
-uploaded_pdfs/
+
+# Debug artifacts
+debug_*.png
+
