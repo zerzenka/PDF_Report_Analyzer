@@ -1,3 +1,4 @@
+from app.services.pdf_extractor import extract_fields_from_pdf
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from pathlib import Path
 import shutil
@@ -15,18 +16,20 @@ def health_check():
 
 @app.post("/upload-pdf")
 async def upload_pdf(file: UploadFile = File(...)):
-    # Validate file type
     if file.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
 
     file_path = UPLOAD_DIR / file.filename
-    
-    # Save uploaded PDF
+
+    # 1️⃣ Save the uploaded PDF
     with file_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
+    # 2️⃣ Extract data from the saved PDF
+    extracted_data = extract_fields_from_pdf(str(file_path))
+
+    # 3️⃣ Return extracted data instead of just file info
     return {
         "filename": file.filename,
-        "content_type": file.content_type,
-        "saved_to": str(file_path)
+        "extracted_data": extracted_data
     }
