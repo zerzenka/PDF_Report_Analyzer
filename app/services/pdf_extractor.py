@@ -1,42 +1,69 @@
 import pdfplumber
 import numpy as np
-from typing import Dict
+from typing import Dict, List
 
 from app.config.template_v1 import PDF_TEMPLATE_V1
-from app.ocr_easyocr import read_id_from_crop
+from app.ocr_easyocr import read_ids_from_crop
 
 
-# 👇 Define which fields are handwritten (digits-only)
-HANDWRITTEN_FIELDS = {
-    "employee_ID",
-}
+# --------------------------------------------------
+# Toggle this while tuning geometry
+# --------------------------------------------------
+DEBUG_GEOMETRY = False   # 🔁 set to False after bbox is correct
 
 
-def extract_fields_from_pdf(pdf_path: str) -> Dict[str, str]:
-    results = {}
+def extract_fields_from_pdf(pdf_path: str) -> Dict[str, List[List[str]]]:
+    """
+    Extract employee ID candidates from the PDF using template_v1.
+    """
 
     with pdfplumber.open(pdf_path) as pdf:
         page = pdf.pages[PDF_TEMPLATE_V1["page"]]
 
-        for field_name, bbox in PDF_TEMPLATE_V1["fields"].items():
-            cropped = page.crop(bbox)
+        # --------------------------------------------------
+        # FULL PAGE DEBUG (once)
+        # --------------------------------------------------
+        page.to_image(resolution=200).save("debug_full_page.png")
 
-            # -------- HANDWRITTEN FIELD --------
-            if field_name in HANDWRITTEN_FIELDS:
-                # Render cropped PDF region to image
-                pil_img = cropped.to_image(resolution=300).original
+        col_cfg = PDF_TEMPLATE_V1["employee_id_column"]
+        x0, top, x1, bottom = col_cfg["bbox"]
+        rows = col_cfg["rows"]
 
-                # TEMPORARY DEBUG: save cropped image to inspect
-                pil_img.save("debug_employee_ID.png")
+        # --------------------------------------------------
+        # DEBUG MODE: show FULL bbox only
+        # --------------------------------------------------
+        if DEBUG_GEOMETRY:
+            cropped = page.crop((x0, top, x1, bottom))
+            pil_img = cropped.to_image(resolution=300).original
+            pil_img.save("debug_bbox_full.png")
 
-                img = np.array(pil_img)  # RGB numpy array
+            # Return early – no OCR, no rows
+            return {
+                "debug": "geometry",
+                "bbox": [x0, top, x1, bottom]
+            }
 
-                value = read_id_from_crop(img)
-                results[field_name] = value if value else None
+        # --------------------------------------------------
+        # NORMAL MODE: slice into rows
+        # --------------------------------------------------
+        row_height = (bottom - top) / rows
 
-            # -------- PRINTED FIELD --------
-            else:
-                text = cropped.extract_text()
-                results[field_name] = text.strip() if text else None
+        all_candidates: List[List[str]] = []
 
-    return results
+        for i in range(rows):
+            y0 = top + i * row_height
+            y1 = y0 + row_height
+
+            cropped = page.crop((x0, y0, x1, y1))
+            pil_img = cropped.to_image(resolution=300).original
+
+            # 🔍 per-row debug image (VERY IMPORTANT)
+            pil_img.save(f"debug_row_{i}.png")
+
+            crop_rgb = np.array(pil_img)
+            candidates = read_ids_from_crop(crop_rgb, row_index=i)
+            all_candidates.append(candidates)
+
+    return {
+        "employee_id_candidates_by_row": all_candidates
+    }
