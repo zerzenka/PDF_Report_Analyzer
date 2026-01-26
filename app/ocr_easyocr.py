@@ -13,7 +13,7 @@ from app.settings import EASYOCR_GPU, EASYOCR_LANGS
 # --------------------------------------------------
 # CONFIG
 # --------------------------------------------------
-DEBUG_OCR = True   # set to False once verified
+DEBUG_OCR = True   # set False once verified
 
 
 # --------------------------------------------------
@@ -36,7 +36,7 @@ def get_reader():
 
 
 # --------------------------------------------------
-# Line removal (pixel-level, handwriting-safe)
+# Line removal (handwriting-safe)
 # --------------------------------------------------
 def _remove_horizontal_lines(gray_np: np.ndarray) -> np.ndarray:
     """
@@ -69,7 +69,7 @@ def _remove_horizontal_lines(gray_np: np.ndarray) -> np.ndarray:
 
 
 # --------------------------------------------------
-# Main OCR function (CANDIDATES ONLY)
+# Main OCR function (candidates only)
 # --------------------------------------------------
 def read_ids_from_crop(crop_rgb: np.ndarray, row_index: int | None = None) -> List[str]:
     """
@@ -77,16 +77,19 @@ def read_ids_from_crop(crop_rgb: np.ndarray, row_index: int | None = None) -> Li
 
     Returns:
         List of digit-only OCR candidates (length 5–6).
-        No validation, no correction, no business rules.
     """
 
     reader = get_reader()
 
-    # --- DEBUG: raw crop ---
+    # -------------------------------
+    # DEBUG: raw crop
+    # -------------------------------
     if DEBUG_OCR and row_index is not None:
         Image.fromarray(crop_rgb).save(f"debug_sa_id_raw_row_{row_index}.png")
 
-    # --- Preprocessing ---
+    # -------------------------------
+    # Preprocessing
+    # -------------------------------
     img = Image.fromarray(crop_rgb)
 
     gray = img.convert("L")
@@ -95,18 +98,39 @@ def read_ids_from_crop(crop_rgb: np.ndarray, row_index: int | None = None) -> Li
 
     gray_np = np.array(gray, dtype=np.uint8)
 
+    # -------------------------------
+    # Remove table lines
+    # -------------------------------
     cleaned_np = _remove_horizontal_lines(gray_np)
 
     if DEBUG_OCR:
         Image.fromarray(cleaned_np).save("debug_sa_id_cleaned.png")
 
-    # --- Multi-pass OCR (robust to handwriting / contrast) ---
-    variants = [
-        cleaned_np,
-        cv2.convertScaleAbs(cleaned_np, alpha=1.15, beta=0),
-        cv2.convertScaleAbs(cleaned_np, alpha=0.90, beta=0),
-    ]
+    # -------------------------------
+    # OCR enhancement variants
+    # -------------------------------
 
+    v1 = cleaned_np
+
+    # slightly higher contrast
+    v2 = cv2.convertScaleAbs(cleaned_np, alpha=1.15, beta=0)
+
+    # slightly lower contrast (sometimes helps faint ink)
+    v3 = cv2.convertScaleAbs(cleaned_np, alpha=0.90, beta=0)
+
+    # light sharpening
+    sharpen_kernel = np.array([
+        [0, -1, 0],
+        [-1, 5, -1],
+        [0, -1, 0]
+    ])
+    v4 = cv2.filter2D(cleaned_np, -1, sharpen_kernel)
+
+    variants = [v1, v2, v3, v4]
+
+    # -------------------------------
+    # OCR passes
+    # -------------------------------
     candidates: List[str] = []
 
     for v in variants:
@@ -119,19 +143,22 @@ def read_ids_from_crop(crop_rgb: np.ndarray, row_index: int | None = None) -> Li
 
         for t in texts:
             digits = re.sub(r"\D", "", t)
+
             if len(digits) in (5, 6):
                 candidates.append(digits)
 
-    # --- De-duplicate (keep order) ---
+    # -------------------------------
+    # De-duplicate
+    # -------------------------------
     seen = set()
-    unique_candidates: List[str] = []
+    unique: List[str] = []
 
     for c in candidates:
         if c not in seen:
             seen.add(c)
-            unique_candidates.append(c)
+            unique.append(c)
 
-    return unique_candidates
+    return unique
 
 
 
