@@ -1,0 +1,7 @@
+torch
+torchvision
+torchaudio
+easyocr
+opencv-python
+pymupdf
+numpy
