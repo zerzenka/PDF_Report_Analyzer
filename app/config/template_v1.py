@@ -7,5 +7,9 @@ PDF_TEMPLATE_V1 = {
     "employee_id_column": {
         "bbox": (352, 443, 423, 555),  # adjust later if needed
         "rows": 7
+    },
+    "employee_name_column": {
+        "bbox": (150, 443, 290, 555),
+        "rows": 7
     }
 }

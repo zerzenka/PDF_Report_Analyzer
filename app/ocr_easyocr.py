@@ -69,7 +69,7 @@ def _remove_horizontal_lines(gray_np: np.ndarray) -> np.ndarray:
 
 
 # --------------------------------------------------
-# Main OCR function (candidates only)
+# OCR: Handwritten EMPLOYEE ID (numbers)
 # --------------------------------------------------
 def read_ids_from_crop(crop_rgb: np.ndarray, row_index: int | None = None) -> List[str]:
     """
@@ -103,19 +103,18 @@ def read_ids_from_crop(crop_rgb: np.ndarray, row_index: int | None = None) -> Li
     # -------------------------------
     cleaned_np = _remove_horizontal_lines(gray_np)
 
-    if DEBUG_OCR:
-        Image.fromarray(cleaned_np).save("debug_sa_id_cleaned.png")
+    if DEBUG_OCR and row_index is not None:
+        Image.fromarray(cleaned_np).save(f"debug_sa_id_cleaned_row_{row_index}.png")
 
     # -------------------------------
     # OCR enhancement variants
     # -------------------------------
-
     v1 = cleaned_np
 
     # slightly higher contrast
     v2 = cv2.convertScaleAbs(cleaned_np, alpha=1.15, beta=0)
 
-    # slightly lower contrast (sometimes helps faint ink)
+    # slightly lower contrast
     v3 = cv2.convertScaleAbs(cleaned_np, alpha=0.90, beta=0)
 
     # light sharpening
@@ -159,6 +158,73 @@ def read_ids_from_crop(crop_rgb: np.ndarray, row_index: int | None = None) -> Li
             unique.append(c)
 
     return unique
+
+
+# --------------------------------------------------
+# OCR: Handwritten EMPLOYEE NAME
+# --------------------------------------------------
+def _clean_name_text(s: str) -> str:
+    s = s.lower()
+    s = re.sub(r"[^a-z ]", " ", s)
+    s = " ".join(s.split())
+    return s
+
+
+def read_name_from_crop(crop_rgb: np.ndarray, row_index: int | None = None) -> str:
+    """
+    OCR a single cropped row containing ONE handwritten employee name.
+
+    Returns:
+        Cleaned name string (lowercase letters + spaces)
+    """
+
+    reader = get_reader()
+
+    # -------------------------------
+    # DEBUG: raw crop
+    # -------------------------------
+    if DEBUG_OCR and row_index is not None:
+        Image.fromarray(crop_rgb).save(f"debug_name_raw_row_{row_index}.png")
+
+    # -------------------------------
+    # Preprocessing
+    # -------------------------------
+    img = Image.fromarray(crop_rgb)
+
+    gray = img.convert("L")
+    gray = ImageOps.autocontrast(gray)
+    gray = gray.filter(ImageFilter.MedianFilter(3))
+
+    gray_np = np.array(gray, dtype=np.uint8)
+
+    cleaned_np = _remove_horizontal_lines(gray_np)
+
+    # Upscale (big boost for handwriting OCR)
+    cleaned_np = cv2.resize(
+        cleaned_np,
+        None,
+        fx=2.0,
+        fy=2.0,
+        interpolation=cv2.INTER_CUBIC
+    )
+
+    if DEBUG_OCR and row_index is not None:
+        Image.fromarray(cleaned_np).save(f"debug_name_cleaned_row_{row_index}.png")
+
+    # -------------------------------
+    # OCR
+    # -------------------------------
+    texts = reader.readtext(
+        cleaned_np,
+        detail=0,
+        allowlist="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ -",
+        paragraph=False,
+    )
+
+    raw_name = " ".join(texts).strip()
+
+    return _clean_name_text(raw_name)
+
 
 
 

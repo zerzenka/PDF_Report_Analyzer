@@ -5,3 +5,4 @@ easyocr
 opencv-python
 pymupdf
 numpy
+rapidfuzz
