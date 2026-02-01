@@ -1,95 +1,175 @@
 import pdfplumber
 import numpy as np
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 
-from app.config.template_v1 import PDF_TEMPLATE_V1
-from app.ocr_easyocr import read_ids_from_crop, read_name_from_crop
-
+from app.config.template_ops_a3 import TEMPLATE_OPS_A3
+from app.ocr_easyocr import read_ids_from_crop, read_name_from_crop, get_reader
 from app.services.employee_db import EmployeeDB
 from app.services.identity_resolver import resolve_identity
 
 
-# --------------------------------------------------
-# Toggle geometry tuning
-# --------------------------------------------------
-DEBUG_GEOMETRY = False
+DEBUG_GEOMETRY = True
 
-
-# --------------------------------------------------
-# Load Excel DB ONCE
-# --------------------------------------------------
 DB = EmployeeDB("employees.xlsx")
 
 
+# ==================================================
+# OCR anchor finder (full page + scaling)
+# ==================================================
+def find_ops_anchors_image(page):
+
+    full_img = page.to_image(resolution=300).original
+
+    if DEBUG_GEOMETRY:
+        full_img.save("debug_full_for_anchors.png")
+
+    img_w, img_h = full_img.size
+    scale_x = page.width / img_w
+    scale_y = page.height / img_h
+
+    reader = get_reader()
+    results = reader.readtext(np.array(full_img), detail=1)
+
+    name_candidates = []
+    id_candidates = []
+
+    for (bbox, text, conf) in results:
+
+        txt = text.strip().upper()
+
+        x0 = min(p[0] for p in bbox) * scale_x
+        x1 = max(p[0] for p in bbox) * scale_x
+        y0 = min(p[1] for p in bbox) * scale_y
+        y1 = max(p[1] for p in bbox) * scale_y
+
+        anchor = {
+            "x0": x0,
+            "x1": x1,
+            "top": y0,
+            "bottom": y1,
+            "text": txt
+        }
+
+        if "NAME" in txt:
+            name_candidates.append(anchor)
+
+        if "SA" in txt and "ID" in txt:
+            id_candidates.append(anchor)
+
+    if not name_candidates or not id_candidates:
+        raise ValueError("Could not detect NAME / SA ID anchors")
+
+    # pick LOWER (table header)
+    PAGE_H = page.height
+
+    def is_middle(a):
+        return PAGE_H * 0.3 < a["top"] < PAGE_H * 0.7
+
+    name_anchor = next(a for a in name_candidates if is_middle(a))
+    id_anchor   = next(a for a in id_candidates if is_middle(a))
+
+
+    return name_anchor, id_anchor
+
+
+# ==================================================
+# Main extractor
+# ==================================================
 def extract_fields_from_pdf(pdf_path: str) -> Dict:
-    """
-    Extract employee IDs AND names from a single PDF using template_v1.
-    Uses number OCR + name OCR + Excel recovery.
-    """
+
+    cfg = TEMPLATE_OPS_A3
 
     with pdfplumber.open(pdf_path) as pdf:
-        page = pdf.pages[PDF_TEMPLATE_V1["page"]]
 
-        # 🔍 Full page debug
-        page.to_image(resolution=200).save("debug_full_page.png")
+        page = pdf.pages[cfg["page"]]
+        pdf_name = pdf_path.split("\\")[-1].replace(".pdf", "")
 
-        # ---- ID column config ----
-        id_cfg = PDF_TEMPLATE_V1["employee_id_column"]
-        x0_id, top, x1_id, bottom = id_cfg["bbox"]
-        rows = id_cfg["rows"]
+        PAGE_W = page.width
+        PAGE_H = page.height
 
-        # ---- Name column config ----
-        name_cfg = PDF_TEMPLATE_V1["employee_name_column"]
-        x0_nm, top2, x1_nm, bottom2 = name_cfg["bbox"]
-
-        # --------------------------------------------------
-        # Geometry debug mode
-        # --------------------------------------------------
         if DEBUG_GEOMETRY:
-            cropped_id = page.crop((x0_id, top, x1_id, bottom))
-            cropped_nm = page.crop((x0_nm, top, x1_nm, bottom))
+            page.to_image(resolution=200).save(
+                f"debug_{pdf_name}_full_page.png"
+            )
 
-            cropped_id.to_image(resolution=300).save("debug_bbox_id.png")
-            cropped_nm.to_image(resolution=300).save("debug_bbox_name.png")
+        # -----------------------------
+        # Find anchors
+        # -----------------------------
+        name_anchor, id_anchor = find_ops_anchors_image(page)
 
-            return {
-                "debug": "geometry",
-                "id_bbox": [x0_id, top, x1_id, bottom],
-                "name_bbox": [x0_nm, top, x1_nm, bottom],
-            }
+        # -----------------------------
+        # Handwriting columns
+        # -----------------------------
 
-        # --------------------------------------------------
-        # Slice columns into rows
-        # --------------------------------------------------
-        row_height = (bottom - top) / rows
+        # NAME values are right of printed NAME up to SA ID
+        name_x0 = name_anchor["x1"] + cfg["pad_x"]
+        name_x1 = id_anchor["x0"] - cfg["pad_x"]
+
+        # SA ID values are right of printed SA ID
+        id_x0 = id_anchor["x1"] + cfg["pad_x"]
+        id_x1 = min(PAGE_W, id_x0 + 220)
+
+        # safety clamp
+        name_x0 = max(0, name_x0)
+        name_x1 = min(PAGE_W, name_x1)
+        id_x0   = max(0, id_x0)
+        id_x1   = min(PAGE_W, id_x1)
+
+        if name_x1 <= name_x0 or id_x1 <= id_x0:
+            raise ValueError(
+                f"Invalid columns: "
+                f"NAME({name_x0},{name_x1}) ID({id_x0},{id_x1})"
+            )
+
+        # -----------------------------
+        # Vertical table layout
+        # -----------------------------
+
+        # start directly under header row
+        table_top = name_anchor["bottom"] + cfg["table_top_offset"]
+
+        row_height = cfg["row_height"]
+        rows = cfg["rows"]
 
         extracted_rows: List[Dict] = []
 
+        # -----------------------------
+        # Loop rows
+        # -----------------------------
         for i in range(rows):
-            y0 = top + i * row_height
+
+            y0 = table_top + i * row_height
             y1 = y0 + row_height
 
-            # --------------------
-            # Crop ID cell
-            # --------------------
-            cropped_id = page.crop((x0_id, y0, x1_id, y1))
-            pil_id = cropped_id.to_image(resolution=300).original
-            pil_id.save(f"debug_row_{i}_id.png")
+            y0 = max(0, y0)
+            y1 = min(PAGE_H, y1)
 
-            id_rgb = np.array(pil_id)
+            if y1 <= y0:
+                continue
 
-            id_candidates = read_ids_from_crop(id_rgb, row_index=i)
+            # ---- SA ID ----
+            id_crop = page.crop((id_x0, y0, id_x1, y1))
+            id_img = id_crop.to_image(resolution=300).original
 
-            # --------------------
-            # Crop Name cell
-            # --------------------
-            cropped_nm = page.crop((x0_nm, y0, x1_nm, y1))
-            pil_nm = cropped_nm.to_image(resolution=300).original
-            pil_nm.save(f"debug_row_{i}_name.png")
+            if DEBUG_GEOMETRY:
+                id_img.save(f"debug_{pdf_name}_row_{i}_id.png")
 
-            nm_rgb = np.array(pil_nm)
+            id_candidates = read_ids_from_crop(
+                np.array(id_img),
+                row_index=i
+            )
 
-            name_clean = read_name_from_crop(nm_rgb, row_index=i)
+            # ---- NAME ----
+            name_crop = page.crop((name_x0, y0, name_x1, y1))
+            name_img = name_crop.to_image(resolution=300).original
+
+            if DEBUG_GEOMETRY:
+                name_img.save(f"debug_{pdf_name}_row_{i}_name.png")
+
+            name_clean = read_name_from_crop(
+                np.array(name_img),
+                row_index=i
+            )
 
             extracted_rows.append({
                 "row": i,
@@ -97,19 +177,19 @@ def extract_fields_from_pdf(pdf_path: str) -> Dict:
                 "ocr_name_clean": name_clean,
             })
 
-    # --------------------------------------------------
-    # Department (manual for now)
-    # --------------------------------------------------
+    # -----------------------------
+    # Department
+    # -----------------------------
     department = "CASTHOUSE"
-
     dept_records = DB.get_records_for_department(department)
 
-    # --------------------------------------------------
-    # Resolve each row (number + name logic)
-    # --------------------------------------------------
+    # -----------------------------
+    # Resolve identity
+    # -----------------------------
     resolved_rows: List[Dict] = []
 
     for row in extracted_rows:
+
         result = resolve_identity(
             number_candidates=row["id_candidates"],
             ocr_name_clean=row["ocr_name_clean"],
@@ -124,21 +204,16 @@ def extract_fields_from_pdf(pdf_path: str) -> Dict:
             "top_candidates": result["top_candidates"],
         })
 
-    # --------------------------------------------------
-    # Final unique IDs for this report
-    # --------------------------------------------------
+    # -----------------------------
+    # Unique employees
+    # -----------------------------
     seen = set()
     final_ids: List[Tuple[str, float]] = []
 
     for r in resolved_rows:
-        emp_id = r["resolved_id"]
-
-        if emp_id is None:
-            continue
-
-        if emp_id not in seen:
-            seen.add(emp_id)
-            final_ids.append((emp_id, r["confidence"]))
+        if r["resolved_id"] and r["resolved_id"] not in seen:
+            seen.add(r["resolved_id"])
+            final_ids.append((r["resolved_id"], r["confidence"]))
 
     return {
         "rows": resolved_rows,
