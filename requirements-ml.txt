@@ -6,3 +6,5 @@ opencv-python
 pymupdf
 numpy
 rapidfuzz
+pandas
+openpyxl
