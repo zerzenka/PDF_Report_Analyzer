@@ -1,7 +1,9 @@
+import base64
+from pathlib import Path
 import pdfplumber
 import numpy as np
 import cv2
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 from app.config.template_ops_a3 import TEMPLATE_OPS_A3
 from app.ocr_easyocr import read_ids_from_crop, read_name_from_crop, get_reader
@@ -9,17 +11,52 @@ from app.services.employee_db import EmployeeDB
 from app.services.identity_resolver import resolve_identity
 
 
-DEBUG_GEOMETRY = True
-DEBUG_PRINT_GEOMETRY = True  # prints computed boxes once per page
+DEBUG_GEOMETRY = False
+DEBUG_PRINT_GEOMETRY = False  # prints computed boxes once per page
+
+# If True, embed base64 crops into JSON response (slower + bigger JSON)
+# For the "export package" architecture, set this False.
+EMBED_DATA_URLS_DEFAULT = False
 
 DB = EmployeeDB("employees.xlsx")
 
 
 # ==================================================
+# Helpers: encode crops for UI (optional)
+# ==================================================
+def img_to_data_url(img: np.ndarray) -> str:
+    """
+    Encode a numpy image (BGR or grayscale) into a PNG data URL.
+    Allows frontend to show crops without saving files.
+    """
+    if img is None or img.size == 0:
+        return ""
+
+    if img.dtype != np.uint8:
+        img = img.astype(np.uint8)
+
+    ok, buf = cv2.imencode(".png", img)
+    if not ok:
+        return ""
+
+    b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+    return f"data:image/png;base64,{b64}"
+
+
+def _ensure_dir(p: Optional[str]) -> Optional[Path]:
+    if not p:
+        return None
+    out = Path(p)
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+# ==================================================
 # Trim all sides (for names)
 # ==================================================
-
-def trim_whitespace(img, threshold=210):
+def trim_whitespace(img: np.ndarray, threshold: int = 210) -> np.ndarray:
+    if img is None or img.size == 0:
+        return img
 
     if len(img.shape) == 3:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -41,8 +78,9 @@ def trim_whitespace(img, threshold=210):
 # ==================================================
 # Trim LEFT side only (for ID column with signature)
 # ==================================================
-
-def trim_left_only(img, threshold=210):
+def trim_left_only(img: np.ndarray, threshold: int = 210) -> np.ndarray:
+    if img is None or img.size == 0:
+        return img
 
     if len(img.shape) == 3:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -62,16 +100,14 @@ def trim_left_only(img, threshold=210):
 # ==================================================
 # OCR anchor finder
 # ==================================================
-
 def find_ops_anchors_image(page):
-
+    # You can drop this to 120 if you want more speed:
     full_img = page.to_image(resolution=180).original
 
     if DEBUG_GEOMETRY:
         full_img.save("debug_full_for_anchors.png")
 
     img_np = np.array(full_img)
-
     img_h, img_w = img_np.shape[:2]
 
     scale_x = page.width / img_w
@@ -84,7 +120,6 @@ def find_ops_anchors_image(page):
     id_candidates = []
 
     for (bbox, text, conf) in results:
-
         txt = text.strip().upper()
 
         x0 = min(p[0] for p in bbox) * scale_x
@@ -97,7 +132,8 @@ def find_ops_anchors_image(page):
             "x1": x1,
             "top": y0,
             "bottom": y1,
-            "text": txt
+            "text": txt,
+            "conf": conf,
         }
 
         if "NAME" in txt:
@@ -114,8 +150,9 @@ def find_ops_anchors_image(page):
     def is_middle(a):
         return PAGE_H * 0.3 < a["top"] < PAGE_H * 0.7
 
+    # Pick anchors in the middle region (table header area)
     name_anchor = next(a for a in name_candidates if is_middle(a))
-    id_anchor   = next(a for a in id_candidates if is_middle(a))
+    id_anchor = next(a for a in id_candidates if is_middle(a))
 
     return name_anchor, id_anchor
 
@@ -123,23 +160,33 @@ def find_ops_anchors_image(page):
 # ==================================================
 # Main extractor
 # ==================================================
+def extract_fields_from_pdf(
+    pdf_path: str,
+    out_dir: str | None = None,
+    embed_data_urls: bool = EMBED_DATA_URLS_DEFAULT,
+) -> Dict:
+    """
+    If out_dir is provided:
+      - saves row crops as PNGs into out_dir
+      - writes id_crop_path / name_crop_path (relative filenames) into rows
 
-def extract_fields_from_pdf(pdf_path: str) -> Dict:
+    If embed_data_urls is True:
+      - embeds base64 data urls into rows (big JSON; OK for single-PDF local UI)
+    """
 
     cfg = TEMPLATE_OPS_A3
+    out_path = _ensure_dir(out_dir)
 
     with pdfplumber.open(pdf_path) as pdf:
-
         page = pdf.pages[cfg["page"]]
-        pdf_name = pdf_path.split("\\")[-1].replace(".pdf", "")
+        pdf_name = Path(pdf_path).stem
 
         PAGE_W = page.width
         PAGE_H = page.height
 
         # -----------------------------------
-        # Render page once
+        # Render page once (FAST)
         # -----------------------------------
-
         fast_img = page.to_image(resolution=180).original
         fast_np = np.array(fast_img)
 
@@ -147,25 +194,21 @@ def extract_fields_from_pdf(pdf_path: str) -> Dict:
             fast_img.save(f"debug_{pdf_name}_full_page_fast.png")
 
         img_h, img_w = fast_np.shape[:2]
-
-        scale_x = img_w / PAGE_W
-        scale_y = img_h / PAGE_H
+        sx = img_w / PAGE_W
+        sy = img_h / PAGE_H
 
         # -----------------------------------
         # Anchors
         # -----------------------------------
-
         name_anchor, id_anchor = find_ops_anchors_image(page)
 
         # -----------------------------------
         # Columns (PDF-space)
         # -----------------------------------
-
         name_x0 = name_anchor["x1"] + cfg["pad_x"]
         name_x1 = id_anchor["x0"] - cfg["pad_x"]
 
-        # IMPORTANT: use cfg["id_shift_left"] directly so it definitely applies
-        id_shift_left = cfg["id_shift_left"]
+        id_shift_left = cfg.get("id_shift_left", 0)
         id_width = cfg["id_width"]
 
         id_x0 = id_anchor["x1"] + cfg["pad_x"] - id_shift_left
@@ -174,8 +217,8 @@ def extract_fields_from_pdf(pdf_path: str) -> Dict:
         # Clamp
         name_x0 = max(0, name_x0)
         name_x1 = min(PAGE_W, name_x1)
-        id_x0   = max(0, id_x0)
-        id_x1   = min(PAGE_W, id_x1)
+        id_x0 = max(0, id_x0)
+        id_x1 = min(PAGE_W, id_x1)
 
         if name_x1 <= name_x0 or id_x1 <= id_x0:
             raise ValueError(
@@ -183,14 +226,12 @@ def extract_fields_from_pdf(pdf_path: str) -> Dict:
             )
 
         # -----------------------------------
-        # Columns (IMAGE-space)  ✅ precompute once (fix drift)
+        # Columns (IMAGE-space) precompute once (fix drift)
         # -----------------------------------
-
-        nx0 = int(round(name_x0 * scale_x))
-        nx1 = int(round(name_x1 * scale_x))
-
-        ix0 = int(round(id_x0 * scale_x))
-        ix1 = int(round(id_x1 * scale_x))
+        nx0 = int(round(name_x0 * sx))
+        nx1 = int(round(name_x1 * sx))
+        ix0 = int(round(id_x0 * sx))
+        ix1 = int(round(id_x1 * sx))
 
         if DEBUG_PRINT_GEOMETRY:
             print(f"[{pdf_name}] id_shift_left={id_shift_left} id_width={id_width}")
@@ -201,17 +242,18 @@ def extract_fields_from_pdf(pdf_path: str) -> Dict:
         # -----------------------------------
         # Rows
         # -----------------------------------
-
         table_top = name_anchor["bottom"] + cfg["table_top_offset"]
 
         row_height = cfg["row_height"]
         row_gap = cfg["row_gap"]
         rows = cfg["rows"]
 
+        crop_scale_name = cfg.get("crop_scale_name", 0.6)
+        crop_scale_id = cfg.get("crop_scale_id", 0.6)
+
         extracted_rows: List[Dict] = []
 
         for i in range(rows):
-
             step = row_height + row_gap
 
             y0 = table_top + i * step
@@ -223,9 +265,8 @@ def extract_fields_from_pdf(pdf_path: str) -> Dict:
             y0 = max(0, y0)
             y1 = min(PAGE_H, y1)
 
-            # Y in image coords (only this changes per row)
-            iy0 = int(round(y0 * scale_y))
-            iy1 = int(round(y1 * scale_y))
+            iy0 = int(round(y0 * sy))
+            iy1 = int(round(y1 * sy))
 
             # crops (fast)
             id_crop_img = fast_np[iy0:iy1, ix0:ix1]
@@ -234,52 +275,81 @@ def extract_fields_from_pdf(pdf_path: str) -> Dict:
             if id_crop_img.size == 0 or name_crop_img.size == 0:
                 continue
 
-            # -----------------------------------
-            # Resize
-            # -----------------------------------
+            # Resize (optional)
+            if crop_scale_id != 1.0:
+                id_crop_img = cv2.resize(
+                    id_crop_img,
+                    None,
+                    fx=crop_scale_id,
+                    fy=crop_scale_id,
+                    interpolation=cv2.INTER_AREA,
+                )
 
-            crop_scale = 0.6
+            if crop_scale_name != 1.0:
+                name_crop_img = cv2.resize(
+                    name_crop_img,
+                    None,
+                    fx=crop_scale_name,
+                    fy=crop_scale_name,
+                    interpolation=cv2.INTER_AREA,
+                )
 
-            id_crop_img = cv2.resize(
-                id_crop_img, None, fx=crop_scale, fy=crop_scale,
-                interpolation=cv2.INTER_AREA
-            )
-
-            name_crop_img = cv2.resize(
-                name_crop_img, None, fx=crop_scale, fy=crop_scale,
-                interpolation=cv2.INTER_AREA
-            )
-
-            # -----------------------------------
-            # Trim correctly
-            # -----------------------------------
-
-            id_crop_img = trim_left_only(id_crop_img)       # ID: only trim left
-            name_crop_img = trim_whitespace(name_crop_img)  # NAME: full trim
+            # Trim
+            id_crop_trim = trim_left_only(id_crop_img)
+            name_crop_trim = trim_whitespace(name_crop_img)
 
             if DEBUG_GEOMETRY:
-                cv2.imwrite(f"debug_{pdf_name}_row_{i}_id_fast.png", id_crop_img)
-                cv2.imwrite(f"debug_{pdf_name}_row_{i}_name_fast.png", name_crop_img)
+                cv2.imwrite(f"debug_{pdf_name}_row_{i}_id_fast.png", id_crop_trim)
+                cv2.imwrite(f"debug_{pdf_name}_row_{i}_name_fast.png", name_crop_trim)
 
-            # -----------------------------------
             # OCR
-            # -----------------------------------
+            id_candidates = read_ids_from_crop(id_crop_trim, row_index=i)
+            name_clean = read_name_from_crop(name_crop_trim, row_index=i)
 
-            id_candidates = read_ids_from_crop(id_crop_img, row_index=i)
-            name_clean = read_name_from_crop(name_crop_img, row_index=i)
+            # Save crops for export package
+            id_crop_path = None
+            name_crop_path = None
 
-            extracted_rows.append({
+            if out_path is not None:
+                id_crop_path = f"row_{i}_id.png"
+                name_crop_path = f"row_{i}_name.png"
+                cv2.imwrite(str(out_path / id_crop_path), id_crop_trim)
+                cv2.imwrite(str(out_path / name_crop_path), name_crop_trim)
+
+            row_obj = {
                 "row": i,
                 "id_candidates": id_candidates,
                 "ocr_name_clean": name_clean,
-            })
+                "id_crop_path": id_crop_path,
+                "name_crop_path": name_crop_path,
+            }
+
+            # Optional embed (for your current single-page UI mode)
+            if embed_data_urls:
+                row_obj["id_crop_data_url"] = img_to_data_url(id_crop_trim)
+                row_obj["name_crop_data_url"] = img_to_data_url(name_crop_trim)
+
+            extracted_rows.append(row_obj)
 
     # ==================================================
     # Resolve identities
     # ==================================================
-
     department = "CASTHOUSE"
     dept_records = DB.get_records_for_department(department)
+
+    # Build lookup id->name (works for tuple OR dict)
+    id_to_name: Dict[str, str] = {}
+
+    for rec in dept_records:
+        if isinstance(rec, tuple):
+            emp_id = rec[0]
+            emp_name = rec[1] if len(rec) > 1 else None
+        else:
+            emp_id = rec.get("emp_id")
+            emp_name = rec.get("name")
+
+        if emp_id:
+            id_to_name[str(emp_id)] = emp_name or ""
 
     resolved_rows: List[Dict] = []
 
@@ -287,30 +357,34 @@ def extract_fields_from_pdf(pdf_path: str) -> Dict:
         result = resolve_identity(
             number_candidates=row["id_candidates"],
             ocr_name_clean=row["ocr_name_clean"],
-            dept_records=dept_records
+            dept_records=dept_records,
         )
+
+        resolved_id = result.get("resolved_id")
+        resolved_name = id_to_name.get(str(resolved_id), "") if resolved_id else ""
 
         resolved_rows.append({
             **row,
-            "resolved_id": result["resolved_id"],
-            "confidence": result["confidence"],
-            "method": result["method"],
-            "top_candidates": result["top_candidates"],
+            "resolved_id": resolved_id,
+            "resolved_name": resolved_name,
+            "confidence": result.get("confidence", 0),
+            "method": result.get("method", ""),
+            "top_candidates": result.get("top_candidates", []),
         })
 
     # ==================================================
     # Unique list
     # ==================================================
-
     seen = set()
     final_ids: List[Tuple[str, float]] = []
 
     for r in resolved_rows:
-        if r["resolved_id"] and r["resolved_id"] not in seen:
-            seen.add(r["resolved_id"])
-            final_ids.append((r["resolved_id"], r["confidence"]))
+        rid = r.get("resolved_id")
+        if rid and rid not in seen:
+            seen.add(rid)
+            final_ids.append((rid, float(r.get("confidence", 0))))
 
     return {
         "rows": resolved_rows,
-        "final_employee_ids": final_ids
+        "final_employee_ids": final_ids,
     }

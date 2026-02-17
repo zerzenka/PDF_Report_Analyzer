@@ -1,6 +1,6 @@
 import threading
 import re
-from typing import List
+from typing import List, Optional
 
 import cv2
 import easyocr
@@ -13,7 +13,7 @@ from app.settings import EASYOCR_GPU, EASYOCR_LANGS
 # --------------------------------------------------
 # CONFIG
 # --------------------------------------------------
-DEBUG_OCR = True   # set False once verified
+DEBUG_OCR = False   # set False once verified
 
 
 # --------------------------------------------------
@@ -42,43 +42,26 @@ def _remove_horizontal_lines(gray_np: np.ndarray) -> np.ndarray:
     """
     Remove thin horizontal table lines without damaging handwriting.
     """
+    _, bw = cv2.threshold(gray_np, 200, 255, cv2.THRESH_BINARY_INV)
 
-    _, bw = cv2.threshold(
-        gray_np,
-        200,
-        255,
-        cv2.THRESH_BINARY_INV
-    )
-
-    kernel = cv2.getStructuringElement(
-        cv2.MORPH_RECT,
-        (45, 1)
-    )
-
-    lines = cv2.morphologyEx(
-        bw,
-        cv2.MORPH_OPEN,
-        kernel,
-        iterations=1
-    )
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (45, 1))
+    lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, kernel, iterations=1)
 
     cleaned = gray_np.copy()
     cleaned[lines > 0] = 255
-
     return cleaned
 
 
 # --------------------------------------------------
 # OCR: Handwritten EMPLOYEE ID (numbers)
 # --------------------------------------------------
-def read_ids_from_crop(crop_rgb: np.ndarray, row_index: int | None = None) -> List[str]:
+def read_ids_from_crop(crop_rgb: np.ndarray, row_index: Optional[int] = None) -> List[str]:
     """
     OCR a single cropped row containing ONE handwritten employee ID.
 
     Returns:
-        List of digit-only OCR candidates (length 5–6).
+        List of digit-only OCR candidates (prefer 6 digits; keep 5-digit as fallback)
     """
-
     reader = get_reader()
 
     # -------------------------------
@@ -88,7 +71,7 @@ def read_ids_from_crop(crop_rgb: np.ndarray, row_index: int | None = None) -> Li
         Image.fromarray(crop_rgb).save(f"debug_sa_id_raw_row_{row_index}.png")
 
     # -------------------------------
-    # Preprocessing
+    # Preprocessing (PIL -> gray)
     # -------------------------------
     img = Image.fromarray(crop_rgb)
 
@@ -107,25 +90,36 @@ def read_ids_from_crop(crop_rgb: np.ndarray, row_index: int | None = None) -> Li
         Image.fromarray(cleaned_np).save(f"debug_sa_id_cleaned_row_{row_index}.png")
 
     # -------------------------------
+    # Conservative binarized variant (NO dilation)
+    # Helps cases like 7↔4 without creating blobs
+    # -------------------------------
+    bw = cv2.adaptiveThreshold(
+        cleaned_np, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        21, 10
+    )
+    bw = cv2.resize(bw, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+
+    if DEBUG_OCR and row_index is not None:
+        Image.fromarray(bw).save(f"debug_sa_id_bw_row_{row_index}.png")
+
+    # -------------------------------
     # OCR enhancement variants
     # -------------------------------
-    v1 = cleaned_np
-
-    # slightly higher contrast
-    v2 = cv2.convertScaleAbs(cleaned_np, alpha=1.15, beta=0)
-
-    # slightly lower contrast
-    v3 = cv2.convertScaleAbs(cleaned_np, alpha=0.90, beta=0)
-
-    # light sharpening
     sharpen_kernel = np.array([
         [0, -1, 0],
         [-1, 5, -1],
         [0, -1, 0]
     ])
-    v4 = cv2.filter2D(cleaned_np, -1, sharpen_kernel)
 
-    variants = [v1, v2, v3, v4]
+    variants = [
+        cleaned_np,
+        cv2.convertScaleAbs(cleaned_np, alpha=1.15, beta=0),
+        cv2.convertScaleAbs(cleaned_np, alpha=0.90, beta=0),
+        cv2.filter2D(cleaned_np, -1, sharpen_kernel),
+        bw,
+    ]
 
     # -------------------------------
     # OCR passes
@@ -142,22 +136,25 @@ def read_ids_from_crop(crop_rgb: np.ndarray, row_index: int | None = None) -> Li
 
         for t in texts:
             digits = re.sub(r"\D", "", t)
-
-            if len(digits) in (5, 6):
+            if len(digits) == 6:
+                candidates.append(digits)
+            elif len(digits) == 5:
                 candidates.append(digits)
 
     # -------------------------------
-    # De-duplicate
+    # De-duplicate (preserve order)
     # -------------------------------
     seen = set()
     unique: List[str] = []
-
     for c in candidates:
         if c not in seen:
             seen.add(c)
             unique.append(c)
 
-    return unique
+    # Prefer 6-digit IDs first
+    unique6 = [c for c in unique if len(c) == 6]
+    unique5 = [c for c in unique if len(c) == 5]
+    return unique6 + unique5
 
 
 # --------------------------------------------------
@@ -170,14 +167,13 @@ def _clean_name_text(s: str) -> str:
     return s
 
 
-def read_name_from_crop(crop_rgb: np.ndarray, row_index: int | None = None) -> str:
+def read_name_from_crop(crop_rgb: np.ndarray, row_index: Optional[int] = None) -> str:
     """
     OCR a single cropped row containing ONE handwritten employee name.
 
     Returns:
         Cleaned name string (lowercase letters + spaces)
     """
-
     reader = get_reader()
 
     # -------------------------------
@@ -222,7 +218,6 @@ def read_name_from_crop(crop_rgb: np.ndarray, row_index: int | None = None) -> s
     )
 
     raw_name = " ".join(texts).strip()
-
     return _clean_name_text(raw_name)
 
 

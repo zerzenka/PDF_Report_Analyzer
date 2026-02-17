@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>HP OCR Review</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 18px; }
+    .top { display:flex; align-items:center; gap:16px; }
+    .title { font-size: 44px; font-weight: 900; line-height: 0.95; }
+    .controls { display:flex; gap:14px; align-items:flex-end; margin-left: 18px; flex-wrap: wrap; }
+    label { font-size: 12px; opacity: 0.75; }
+    select, input { padding: 7px 10px; border: 1px solid #cfcfcf; border-radius: 10px; }
+    .status { opacity: 0.75; margin-left: 8px; font-size: 18px; }
+    hr { border: none; border-top: 1px solid #eee; margin: 14px 0; }
+
+    .meta { font-size: 12px; opacity: 0.7; margin-bottom: 10px; }
+
+    .row {
+      border: 1px solid #e5e5e5;
+      border-radius: 14px;
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+
+    .rowHeader { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .badge { padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 800; }
+    .bad { background: #ffe7e7; color: #b40000; }
+    .good { background: #e7ffea; color: #0d6b1a; }
+
+    .grid {
+      display:grid;
+      grid-template-columns: 240px 240px 1fr 1fr 320px;
+      gap: 12px;
+      align-items: start;
+      margin-top: 10px;
+    }
+
+    .imgBox {
+      border: 1px solid #eee;
+      border-radius: 12px;
+      padding: 8px;
+      height: 140px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      background:#fafafa;
+      overflow:hidden;
+    }
+    .imgBox img { max-width: 100%; max-height: 120px; }
+
+    .field label { display:block; margin-bottom: 6px; }
+    .field input { width: 100%; box-sizing:border-box; font-size: 16px; }
+
+    .hint { font-size: 12px; opacity: 0.65; margin-top: 6px; }
+
+    .suggestBox { position: relative; }
+    .suggestList {
+      position: absolute;
+      top: 66px;
+      left: 0;
+      right: 0;
+      background: white;
+      border: 1px solid #ddd;
+      border-radius: 12px;
+      max-height: 240px;
+      overflow: auto;
+      z-index: 50;
+      display:none;
+    }
+    .suggestItem {
+      padding: 10px 12px;
+      cursor: pointer;
+      display:flex;
+      justify-content:space-between;
+      gap:10px;
+      align-items:flex-start;
+    }
+    .suggestItem:hover { background:#f5f5f5; }
+    .small { font-size: 12px; opacity: 0.7; }
+    .sid { font-weight: 900; font-size: 16px; }
+
+    /* NEW: buttons */
+    .btn {
+      padding: 9px 14px;
+      border-radius: 10px;
+      border: 1px solid #cfcfcf;
+      background: white;
+      cursor: pointer;
+      font-weight: 800;
+    }
+    .btn:hover { background: #f6f6f6; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+
+  <div class="top">
+    <div class="title">HP OCR<br/>Review</div>
+
+    <div class="controls">
+      <div>
+        <label>Batch</label><br/>
+        <select id="batchSelect"></select>
+      </div>
+
+      <div>
+        <label>Document</label><br/>
+        <select id="docSelect"></select>
+      </div>
+
+      <!-- NEW: Submit button -->
+      <div>
+        <label>&nbsp;</label><br/>
+        <button id="submitBtn" class="btn" disabled>Submit</button>
+      </div>
+
+      <div class="status" id="status">Loading…</div>
+    </div>
+  </div>
+
+  <hr/>
+
+  <div id="meta" class="meta"></div>
+  <div id="rowsContainer"></div>
+
+<script>
+const batchSelect = document.getElementById("batchSelect");
+const docSelect = document.getElementById("docSelect");
+const submitBtn = document.getElementById("submitBtn");
+const statusEl = document.getElementById("status");
+const rowsContainer = document.getElementById("rowsContainer");
+const metaEl = document.getElementById("meta");
+
+let CURRENT = {
+  export: null,
+  doc: null,
+  staticBase: null,
+  data: null
+};
+
+function getRowsFromDocData(docData) {
+  if (docData && Array.isArray(docData.rows)) return docData.rows;
+  return [];
+}
+
+function imgUrl(staticBase, fileName) {
+  if (!staticBase || !fileName) return "";
+  return `${staticBase}/${fileName}`;
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+  }[c]));
+}
+function escapeAttr(s) {
+  return String(s ?? "").replace(/"/g, "&quot;");
+}
+
+function computeResolved(r) {
+  const idFinal = String(r.resolved_id ?? "").trim();
+  const nameFinal = String(r.resolved_name ?? "").trim();
+  return idFinal !== "" && nameFinal !== "";
+}
+
+function updateBadge(rowCard, rowObj) {
+  const badge = rowCard.querySelector(".badge");
+  if (!badge) return;
+  const isResolved = computeResolved(rowObj);
+  badge.classList.toggle("good", isResolved);
+  badge.classList.toggle("bad", !isResolved);
+  badge.textContent = isResolved ? "Resolved" : "Needs review";
+}
+
+function updateMeta() {
+  const rows = getRowsFromDocData(CURRENT.data);
+  const resolvedCount = rows.filter(computeResolved).length;
+  metaEl.textContent = `Batch: ${CURRENT.export} | Doc: ${CURRENT.doc} | Resolved: ${resolvedCount}/${rows.length}`;
+}
+
+function renderDoc(docData) {
+  CURRENT.data = docData;
+  CURRENT.export = docData._export;
+  CURRENT.doc = docData._doc_name;
+  CURRENT.staticBase = docData._static_base;
+
+  submitBtn.disabled = false;
+
+  updateMeta();
+  rowsContainer.innerHTML = "";
+
+  const rows = getRowsFromDocData(docData);
+
+  rows.forEach((r, idx) => {
+    const nameOcr = r.ocr_name_clean ?? "";
+    const idOcr = (Array.isArray(r.id_candidates) && r.id_candidates.length) ? r.id_candidates[0] : "";
+
+    const nameFinal = r.resolved_name ?? "";
+    const idFinal = r.resolved_id ?? "";
+
+    const nameCrop = r.name_crop_path ?? "";
+    const idCrop = r.id_crop_path ?? "";
+
+    const resolved = computeResolved(r);
+
+    const rowEl = document.createElement("div");
+    rowEl.className = "row";
+
+    rowEl.innerHTML = `
+      <div class="rowHeader">
+        <div>
+          <b>Row ${idx + 1}</b>
+          <span class="small">OCR: ${escapeHtml(nameOcr)} / ${escapeHtml(idOcr)}</span>
+          <span class="small">Confidence: ${(r.confidence ?? 0).toFixed(1)} | ${escapeHtml(r.method ?? "")}</span>
+        </div>
+        <div class="badge ${resolved ? "good" : "bad"}">${resolved ? "Resolved" : "Needs review"}</div>
+      </div>
+
+      <div class="grid">
+        <div>
+          <div class="small" style="margin-bottom:6px;">Name crop</div>
+          <div class="imgBox">
+            <img src="${imgUrl(CURRENT.staticBase, nameCrop)}" alt="name crop" />
+          </div>
+          <div class="hint">file: ${escapeHtml(nameCrop)}</div>
+        </div>
+
+        <div>
+          <div class="small" style="margin-bottom:6px;">ID crop</div>
+          <div class="imgBox">
+            <img src="${imgUrl(CURRENT.staticBase, idCrop)}" alt="id crop" />
+          </div>
+          <div class="hint">file: ${escapeHtml(idCrop)}</div>
+        </div>
+
+        <div class="field">
+          <label>Name (final)</label>
+          <input type="text"
+                 value="${escapeAttr(nameFinal)}"
+                 placeholder="Enter name"
+                 data-row="${idx}"
+                 data-field="resolved_name"/>
+          <div class="hint">Writes to <b>resolved_name</b></div>
+        </div>
+
+        <div class="field">
+          <label>ID (final)</label>
+          <input type="text"
+                 value="${escapeAttr(idFinal)}"
+                 placeholder="Enter ID"
+                 data-row="${idx}"
+                 data-field="resolved_id"/>
+          <div class="hint">Writes to <b>resolved_id</b></div>
+        </div>
+
+        <div class="field suggestBox">
+          <label>Search ID (digits)</label>
+          <input type="text" placeholder="Type digits…" data-row="${idx}" class="idSearch"/>
+          <div class="suggestList" id="suggest_${idx}"></div>
+          <div class="hint">Dropdown shows ID + Name from employees.xlsx</div>
+        </div>
+      </div>
+    `;
+
+    rowsContainer.appendChild(rowEl);
+  });
+
+  wireRowEvents();
+}
+
+function wireRowEvents() {
+  // Write changes into CURRENT.data (memory) and update badge + meta instantly
+  document.querySelectorAll('input[data-field]').forEach(inp => {
+    inp.addEventListener('input', (e) => {
+      const rowIdx = parseInt(e.target.getAttribute("data-row"), 10);
+      const field = e.target.getAttribute("data-field");
+      const rows = getRowsFromDocData(CURRENT.data);
+      if (!rows[rowIdx]) return;
+
+      rows[rowIdx][field] = e.target.value;
+
+      const rowCard = e.target.closest(".row");
+      if (rowCard) updateBadge(rowCard, rows[rowIdx]);
+
+      updateMeta();
+    });
+  });
+
+  // Suggestions on search
+  document.querySelectorAll(".idSearch").forEach(inp => {
+    inp.addEventListener("input", async (e) => {
+      const rowIdx = parseInt(e.target.getAttribute("data-row"), 10);
+      const q = String(e.target.value || "").trim();
+      const list = document.getElementById(`suggest_${rowIdx}`);
+
+      if (q.length < 2) {
+        list.style.display = "none";
+        list.innerHTML = "";
+        return;
+      }
+
+      const res = await fetch(`/suggest-ids?q=${encodeURIComponent(q)}&limit=10`);
+      if (!res.ok) return;
+
+      const data = await res.json();
+      const suggestions = data.suggestions || [];
+
+      list.innerHTML = "";
+      suggestions.forEach(s => {
+        const div = document.createElement("div");
+        div.className = "suggestItem";
+
+        div.innerHTML = `
+          <div>
+            <div class="sid">${escapeHtml(s.id)}</div>
+            <div class="small">${escapeHtml(s.name || "")}</div>
+          </div>
+          <div class="small">${(s.score ?? 0).toFixed(2)}</div>
+        `;
+
+        div.onclick = () => {
+          const rows = getRowsFromDocData(CURRENT.data);
+          const rowObj = rows[rowIdx];
+
+          const idFinalInput = document.querySelector(`input[data-row="${rowIdx}"][data-field="resolved_id"]`);
+          const nameFinalInput = document.querySelector(`input[data-row="${rowIdx}"][data-field="resolved_name"]`);
+
+          // Set resolved_id
+          if (idFinalInput) {
+            idFinalInput.value = s.id;
+            idFinalInput.dispatchEvent(new Event("input"));
+          }
+
+          // Prefer backend name (employees.xlsx)
+          if (nameFinalInput && s.name) {
+            nameFinalInput.value = s.name;
+            nameFinalInput.dispatchEvent(new Event("input"));
+          } else if (nameFinalInput && rowObj && Array.isArray(rowObj.top_candidates)) {
+            // Fallback: try from top_candidates
+            const hit = rowObj.top_candidates.find(c => String(c.emp_id) === String(s.id));
+            if (hit && hit.name_original) {
+              nameFinalInput.value = hit.name_original;
+              nameFinalInput.dispatchEvent(new Event("input"));
+            }
+          }
+
+          list.style.display = "none";
+          list.innerHTML = "";
+        };
+
+        list.appendChild(div);
+      });
+
+      list.style.display = suggestions.length ? "block" : "none";
+    });
+
+    // hide on blur (delay allows click)
+    inp.addEventListener("blur", (e) => {
+      const rowIdx = parseInt(e.target.getAttribute("data-row"), 10);
+      const list = document.getElementById(`suggest_${rowIdx}`);
+      setTimeout(() => { list.style.display = "none"; }, 150);
+    });
+  });
+}
+
+/* ===========================
+   NEW: Submit summary handler
+   =========================== */
+submitBtn.addEventListener("click", async () => {
+  if (!CURRENT.data) return;
+
+  const rows = getRowsFromDocData(CURRENT.data);
+
+  // Send only what backend needs
+  const payload = {
+    export: CURRENT.export,
+    doc: CURRENT.doc,
+    rows: rows.map(r => ({
+      resolved_id: r.resolved_id,
+      resolved_name: r.resolved_name
+    }))
+  };
+
+  submitBtn.disabled = true;
+  statusEl.textContent = "Submitting…";
+
+  try {
+    const res = await fetch("/api/submit-summary", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) {
+      const txt = await res.text();
+      console.log(txt);
+      statusEl.textContent = "Submit failed ❌";
+      submitBtn.disabled = false;
+      return;
+    }
+
+    const data = await res.json();
+    statusEl.textContent = `Submitted ✅ (${data.updated_employees} employees)`;
+    submitBtn.disabled = false;
+  } catch (err) {
+    console.log(err);
+    statusEl.textContent = "Submit failed ❌";
+    submitBtn.disabled = false;
+  }
+});
+
+async function loadBatches() {
+  statusEl.textContent = "Loading batches…";
+  const res = await fetch("/api/batches");
+  const data = await res.json();
+
+  batchSelect.innerHTML = "";
+  (data.batches || []).forEach(b => {
+    const opt = document.createElement("option");
+    opt.value = b.id;
+    opt.textContent = b.title || b.id;
+    batchSelect.appendChild(opt);
+  });
+
+  if (!batchSelect.value) {
+    statusEl.textContent = "No export batches found.";
+    submitBtn.disabled = true;
+    return;
+  }
+
+  batchSelect.onchange = () => loadDocs(batchSelect.value);
+  await loadDocs(batchSelect.value);
+}
+
+async function loadDocs(exportName) {
+  statusEl.textContent = `Loading docs for ${exportName}…`;
+  const res = await fetch(`/api/batches/${encodeURIComponent(exportName)}/docs`);
+  if (!res.ok) {
+    statusEl.textContent = "Failed to load docs.";
+    submitBtn.disabled = true;
+    return;
+  }
+  const data = await res.json();
+
+  docSelect.innerHTML = "";
+  (data.documents || []).forEach(name => {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    docSelect.appendChild(opt);
+  });
+
+  if (!docSelect.value) {
+    statusEl.textContent = "No documents in this batch.";
+    rowsContainer.innerHTML = "";
+    metaEl.textContent = "";
+    submitBtn.disabled = true;
+    return;
+  }
+
+  docSelect.onchange = () => loadDoc(exportName, docSelect.value);
+  await loadDoc(exportName, docSelect.value);
+}
+
+async function loadDoc(exportName, docName) {
+  statusEl.textContent = `Loading ${docName}…`;
+  submitBtn.disabled = true;
+
+  const res = await fetch(`/api/batches/${encodeURIComponent(exportName)}/docs/${encodeURIComponent(docName)}`);
+  if (!res.ok) {
+    statusEl.textContent = `Failed loading ${docName}`;
+    submitBtn.disabled = true;
+    return;
+  }
+
+  const docData = await res.json();
+  statusEl.textContent = `Loaded`;
+  renderDoc(docData);
+}
+
+loadBatches();
+</script>
+
+</body>
+</html>
