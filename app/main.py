@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List
+from datetime import datetime
+from urllib.parse import quote  # NEW: for URL-safe filenames
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -14,14 +17,13 @@ from app.services.batch_processor import process_pdf_batch
 from app.services.employee_db import EmployeeDB
 from app.services.id_suggest import suggest_ids
 
-# NEW (Excel writing)
 import openpyxl
 
 
 app = FastAPI(title="PDF Report Analyzer")
 
 # --------------------------------------------------
-# Paths (adjust ONLY this)
+# Paths
 # --------------------------------------------------
 SHARED_ROOT = Path(r"I:\60 - Services\30 - BI\010 - Shared\HP_app")
 
@@ -128,14 +130,211 @@ def _list_docs_from_manifest(manifest: Dict[str, Any], docs_root: Path) -> List[
     return out
 
 
+# ---------------------------
+# per-doc review storage
+# ---------------------------
+def _review_path(export_dir: Path, doc_name: str) -> Path:
+    return export_dir / "docs" / doc_name / "review.json"
+
+
+def _load_review(export_dir: Path, doc_name: str) -> Dict[str, Any]:
+    p = _review_path(export_dir, doc_name)
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _merge_review_into_results(results: Dict[str, Any], review: Dict[str, Any]) -> Dict[str, Any]:
+    if not review or "rows" not in review:
+        return results
+
+    review_map: Dict[int, Dict[str, Any]] = {}
+    for rr in review.get("rows", []):
+        try:
+            review_map[int(rr.get("row"))] = rr
+        except Exception:
+            continue
+
+    rows = results.get("rows", [])
+    if isinstance(rows, list):
+        for r in rows:
+            try:
+                row_idx = int(r.get("row"))
+            except Exception:
+                continue
+            if row_idx in review_map:
+                saved = review_map[row_idx]
+                if "resolved_id" in saved:
+                    r["resolved_id"] = saved.get("resolved_id")
+                if "resolved_name" in saved:
+                    r["resolved_name"] = saved.get("resolved_name")
+
+    results["_review_saved_at"] = review.get("saved_at")
+    return results
+
+
+# ---------------------------
+# submit-once log
+# ---------------------------
+SUBMIT_LOG_PATH = EXPORTS_ROOT / "submitted_docs.xlsx"
+
+
+def _ensure_submit_log():
+    if not SUBMIT_LOG_PATH.exists():
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "log"
+        ws.append(["Export", "Document", "Submitted_At"])
+        wb.save(SUBMIT_LOG_PATH)
+
+
+def _is_doc_already_submitted(export_name: str, doc_name: str) -> bool:
+    _ensure_submit_log()
+    wb = openpyxl.load_workbook(SUBMIT_LOG_PATH)
+    ws = wb["log"]
+    for r in ws.iter_rows(min_row=2, values_only=True):
+        e = str(r[0] or "").strip()
+        d = str(r[1] or "").strip()
+        if e == export_name and d == doc_name:
+            return True
+    return False
+
+
+def _mark_doc_submitted(export_name: str, doc_name: str):
+    _ensure_submit_log()
+    wb = openpyxl.load_workbook(SUBMIT_LOG_PATH)
+    ws = wb["log"]
+    ws.append([export_name, doc_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+    wb.save(SUBMIT_LOG_PATH)
+
+
+# ---------------------------
+# PDF link helpers
+# ---------------------------
+def _get_manifest_source_pdf(export_dir: Path, doc_name: str) -> str | None:
+    """
+    Find the original PDF filename for a given doc folder using manifest.json.
+    Looks for keys: source_pdf / pdf / source.
+    """
+    manifest_path = export_dir / "manifest.json"
+    if not manifest_path.exists():
+        return None
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    docs: Any = None
+    if isinstance(manifest.get("documents"), list):
+        docs = manifest["documents"]
+    elif isinstance(manifest.get("docs"), list):
+        docs = manifest["docs"]
+    elif isinstance(manifest.get("items"), list):
+        docs = manifest["items"]
+
+    if not isinstance(docs, list):
+        return None
+
+    for item in docs:
+        if isinstance(item, dict):
+            dn = (item.get("doc_name") or item.get("name") or item.get("folder_name") or "").strip()
+            sp = (item.get("source_pdf") or item.get("pdf") or item.get("source") or "").strip()
+            if dn == doc_name and sp:
+                return sp
+
+    return None
+
+
+def _extract_sa_ids(s: str) -> List[str]:
+    # matches SA12345 and SA012345 etc
+    return sorted(set(re.findall(r"\bSA\d+\b", s, flags=re.IGNORECASE)))
+
+
+def _score_pdf_match(doc_name: str, pdf_filename: str) -> int:
+    """
+    Score based on how many SA IDs are common.
+    If no SA IDs exist, fall back to token overlap.
+    """
+    doc_ids = set(_extract_sa_ids(doc_name))
+    pdf_ids = set(_extract_sa_ids(pdf_filename))
+
+    if doc_ids:
+        return len(doc_ids.intersection(pdf_ids))
+
+    # fallback: token overlap (very rough)
+    def norm_tokens(x: str) -> set[str]:
+        x = x.lower()
+        x = re.sub(r"[^a-z0-9]+", " ", x)
+        toks = {t for t in x.split() if len(t) >= 3}
+        return toks
+
+    return len(norm_tokens(doc_name).intersection(norm_tokens(pdf_filename)))
+
+
+def _find_pdf_for_doc(export_dir: Path, doc_name: str) -> str | None:
+    """
+    Return a PDF filename that exists in INPUT_DIR, for this doc.
+    Priority:
+      1) manifest source_pdf
+      2) exact match (doc_name.pdf)
+      3) best match by SA IDs overlap (most reliable)
+      4) contains match (last resort)
+    """
+    if not INPUT_DIR.exists():
+        return None
+
+    # 1) Manifest
+    sp = _get_manifest_source_pdf(export_dir, doc_name)
+    if sp and (INPUT_DIR / sp).exists():
+        return sp
+
+    # 2) Exact doc_name + extension
+    cand = list(INPUT_DIR.glob(f"{doc_name}.pdf")) + list(INPUT_DIR.glob(f"{doc_name}.PDF"))
+    if cand:
+        return cand[0].name
+
+    # 3) Best SA-ID overlap score
+    pdfs = list(INPUT_DIR.glob("*.pdf")) + list(INPUT_DIR.glob("*.PDF"))
+    if pdfs:
+        scored = [(p.name, _score_pdf_match(doc_name, p.name)) for p in pdfs]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        best_name, best_score = scored[0]
+        # require at least 1 ID overlap if doc has SA IDs
+        if _extract_sa_ids(doc_name):
+            if best_score >= 1:
+                return best_name
+        else:
+            # if no SA ids in doc_name, accept weak score threshold
+            if best_score >= 2:
+                return best_name
+
+    # 4) contains match
+    lowered = doc_name.lower()
+    for p in pdfs:
+        if lowered in p.name.lower():
+            return p.name
+
+    return None
+
+
 # ==================================================
-# Static mount: serve ALL exports
+# Static mounts
 # ==================================================
-if not EXPORTS_ROOT.exists():
-    print(f"[WARN] EXPORTS_ROOT does not exist yet: {EXPORTS_ROOT}")
-else:
+if EXPORTS_ROOT.exists():
     app.mount("/static", StaticFiles(directory=str(EXPORTS_ROOT)), name="static")
     print(f"[STATIC] Mounted /static -> {EXPORTS_ROOT}")
+else:
+    print(f"[WARN] EXPORTS_ROOT does not exist yet: {EXPORTS_ROOT}")
+
+if INPUT_DIR.exists():
+    app.mount("/pdfs", StaticFiles(directory=str(INPUT_DIR)), name="pdfs")
+    print(f"[PDFS] Mounted /pdfs -> {INPUT_DIR}")
+else:
+    print(f"[WARN] INPUT_DIR does not exist yet: {INPUT_DIR}")
 
 
 # ==================================================
@@ -181,12 +380,11 @@ def api_batch_docs(export_name: str):
     docs_root = _docs_root(export_dir)
 
     docs = _list_docs_from_manifest(manifest, docs_root)
-
     return JSONResponse({"export": export_dir.name, "documents": docs})
 
 
 # ==================================================
-# API: read one doc results.json in batch
+# API: read one doc results.json (MERGED with review.json)
 # ==================================================
 @app.get("/api/batches/{export_name}/docs/{doc_name}")
 def api_batch_doc_detail(export_name: str, doc_name: str):
@@ -207,7 +405,72 @@ def api_batch_doc_detail(export_name: str, doc_name: str):
     data["_doc_name"] = doc_name
     data["_static_base"] = f"/static/{export_dir.name}/docs/{doc_name}"
 
+    # PDF link (robust)
+    pdf_name = _find_pdf_for_doc(export_dir, doc_name)
+    if pdf_name:
+        data["_pdf_available"] = True
+        # IMPORTANT: URL-safe encoding for spaces/() etc
+        data["_pdf_url"] = f"/pdfs/{quote(pdf_name)}"
+        data["_pdf_name"] = pdf_name
+    else:
+        data["_pdf_available"] = False
+        data["_pdf_url"] = None
+        data["_pdf_name"] = None
+
+    review = _load_review(export_dir, doc_name)
+    data = _merge_review_into_results(data, review)
+
     return JSONResponse(data)
+
+
+# ==================================================
+# API: explicit pdf-link endpoint (optional)
+# ==================================================
+@app.get("/api/batches/{export_name}/docs/{doc_name}/pdf-link")
+def api_doc_pdf_link(export_name: str, doc_name: str):
+    export_dir = _safe_export_folder(export_name)
+    pdf_name = _find_pdf_for_doc(export_dir, doc_name)
+    if not pdf_name:
+        return {"available": False, "pdf_url": None, "pdf_name": None}
+    return {"available": True, "pdf_url": f"/pdfs/{quote(pdf_name)}", "pdf_name": pdf_name}
+
+
+# ==================================================
+# Save per-doc review (writes review.json)
+# ==================================================
+@app.post("/api/batches/{export_name}/docs/{doc_name}/save-review")
+async def save_review_for_doc(export_name: str, doc_name: str, payload: Dict[str, Any]):
+    export_dir = _safe_export_folder(export_name)
+    docs_root = _docs_root(export_dir)
+    _ = _safe_doc_folder(docs_root, doc_name)
+
+    rows = payload.get("rows", [])
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=400, detail="rows must be a list")
+
+    cleaned: List[Dict[str, Any]] = []
+    for r in rows:
+        try:
+            row_idx = int(r.get("row"))
+        except Exception:
+            continue
+        cleaned.append({
+            "row": row_idx,
+            "resolved_id": str(r.get("resolved_id") or "").strip(),
+            "resolved_name": str(r.get("resolved_name") or "").strip(),
+        })
+
+    review_doc = {
+        "export": export_name,
+        "doc": doc_name,
+        "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "rows": cleaned
+    }
+
+    p = _review_path(export_dir, doc_name)
+    p.write_text(json.dumps(review_doc, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return {"status": "ok", "review_file": str(p)}
 
 
 # ==================================================
@@ -245,8 +508,7 @@ async def suggest_ids_endpoint(q: str, department: str = "CASTHOUSE", limit: int
 
 
 # ==================================================
-# NEW: Submit summary -> review_summary.xlsx
-# Columns: ID | Name | Count | Documents
+# Submit summary -> review_summary.xlsx (submit once per doc)
 # ==================================================
 @app.post("/api/submit-summary")
 async def submit_summary(payload: Dict[str, Any]):
@@ -257,9 +519,16 @@ async def submit_summary(payload: Dict[str, Any]):
     if not export_name or not doc_name or not isinstance(rows, list):
         raise HTTPException(status_code=400, detail="Invalid payload")
 
+    if _is_doc_already_submitted(export_name, doc_name):
+        return {
+            "status": "ok",
+            "already_submitted": True,
+            "document": doc_name,
+            "export": export_name
+        }
+
     out_path = EXPORTS_ROOT / "review_summary.xlsx"
 
-    # Create workbook if needed
     if not out_path.exists():
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -270,7 +539,6 @@ async def submit_summary(payload: Dict[str, Any]):
     wb = openpyxl.load_workbook(out_path)
     ws = wb["summary"]
 
-    # Load existing summary by ID
     existing: Dict[str, Dict[str, Any]] = {}
     for r in ws.iter_rows(min_row=2, values_only=False):
         emp_id_cell, name_cell, count_cell, docs_cell = r[0], r[1], r[2], r[3]
@@ -290,13 +558,10 @@ async def submit_summary(payload: Dict[str, Any]):
             "docs": docs_set,
         }
 
-    # Aggregate this submission (count occurrences per employee within the doc)
     doc_counts: Dict[str, Dict[str, Any]] = {}
     for rr in rows:
         emp_id = str(rr.get("resolved_id") or "").strip()
         emp_name = str(rr.get("resolved_name") or "").strip()
-
-        # only resolved entries
         if not emp_id or not emp_name:
             continue
 
@@ -304,42 +569,38 @@ async def submit_summary(payload: Dict[str, Any]):
             doc_counts[emp_id] = {"name": emp_name, "count": 0}
         doc_counts[emp_id]["count"] += 1
 
-        # keep "better" (longer) name if it appears
         if len(emp_name) > len(doc_counts[emp_id]["name"]):
             doc_counts[emp_id]["name"] = emp_name
 
-    # Write updates
     for emp_id, info in doc_counts.items():
         add_count = int(info["count"])
         new_name = str(info["name"])
 
         if emp_id in existing:
             row_idx = existing[emp_id]["row"]
-
-            # Count += occurrences in this doc
             old_count = existing[emp_id]["count"]
             ws.cell(row=row_idx, column=3).value = old_count + add_count
 
-            # Name update if empty or "better"
             old_name = existing[emp_id]["name"]
             if (not old_name) or (len(new_name) > len(old_name)):
                 ws.cell(row=row_idx, column=2).value = new_name
 
-            # Documents union
             docs_set = existing[emp_id]["docs"]
             docs_set.add(doc_name)
             ws.cell(row=row_idx, column=4).value = ", ".join(sorted(docs_set))
-
         else:
             ws.append([emp_id, new_name, add_count, doc_name])
 
     wb.save(out_path)
+    _mark_doc_submitted(export_name, doc_name)
 
     return {
         "status": "ok",
+        "already_submitted": False,
         "file": str(out_path),
         "updated_employees": len(doc_counts),
         "document": doc_name,
+        "export": export_name,
     }
 
 
