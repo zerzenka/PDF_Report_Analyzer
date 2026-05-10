@@ -1,0 +1,245 @@
+{
+  "rows": [
+    {
+      "row": 0,
+      "id_candidates": [
+        "10754"
+      ],
+      "ocr_name_clean": "gek",
+      "id_crop_path": "row_0_id.png",
+      "name_crop_path": "row_0_name.png",
+      "resolved_id": "101754",
+      "resolved_name": "gayth al saadi",
+      "confidence": 90.9090909090909,
+      "method": "number_fuzzy_recovery",
+      "top_candidates": [
+        {
+          "emp_id": "101754",
+          "number_score": 90.9090909090909
+        }
+      ]
+    },
+    {
+      "row": 1,
+      "id_candidates": [],
+      "ocr_name_clean": "",
+      "id_crop_path": "row_1_id.png",
+      "name_crop_path": "row_1_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 0.0,
+      "method": "no_number_no_name",
+      "top_candidates": []
+    },
+    {
+      "row": 2,
+      "id_candidates": [],
+      "ocr_name_clean": "e",
+      "id_crop_path": "row_2_id.png",
+      "name_crop_path": "row_2_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 9.285714285714288,
+      "method": "ambiguous_manual_review",
+      "top_candidates": [
+        {
+          "emp_id": "100434",
+          "name_original": "Ahmed Al Badi",
+          "name_score": 14.28571428571429,
+          "number_score": 0.0,
+          "total_score": 9.285714285714288
+        },
+        {
+          "emp_id": "100278",
+          "name_original": "Ishaq Mohammed",
+          "name_score": 13.33333333333333,
+          "number_score": 0.0,
+          "total_score": 8.666666666666664
+        },
+        {
+          "emp_id": "101407",
+          "name_original": "Ahmed AL Shahi",
+          "name_score": 13.33333333333333,
+          "number_score": 0.0,
+          "total_score": 8.666666666666664
+        },
+        {
+          "emp_id": "101715",
+          "name_original": "Ahmed AL Kaabi",
+          "name_score": 13.33333333333333,
+          "number_score": 0.0,
+          "total_score": 8.666666666666664
+        },
+        {
+          "emp_id": "100757",
+          "name_original": "Ahmed Al Shibli",
+          "name_score": 12.5,
+          "number_score": 0.0,
+          "total_score": 8.125
+        }
+      ]
+    },
+    {
+      "row": 3,
+      "id_candidates": [],
+      "ocr_name_clean": "c",
+      "id_crop_path": "row_3_id.png",
+      "name_crop_path": "row_3_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 0.0,
+      "method": "ambiguous_manual_review",
+      "top_candidates": [
+        {
+          "emp_id": "100278",
+          "name_original": "Ishaq Mohammed",
+          "name_score": 0.0,
+          "number_score": 0.0,
+          "total_score": 0.0
+        },
+        {
+          "emp_id": "100299",
+          "name_original": "Mohammed Al Washahi",
+          "name_score": 0.0,
+          "number_score": 0.0,
+          "total_score": 0.0
+        },
+        {
+          "emp_id": "100416",
+          "name_original": "Mohammed Al Maamari",
+          "name_score": 0.0,
+          "number_score": 0.0,
+          "total_score": 0.0
+        },
+        {
+          "emp_id": "100763",
+          "name_original": "Mohammed Al Maamari",
+          "name_score": 0.0,
+          "number_score": 0.0,
+          "total_score": 0.0
+        },
+        {
+          "emp_id": "100421",
+          "name_original": "Ali Al Alawi",
+          "name_score": 0.0,
+          "number_score": 0.0,
+          "total_score": 0.0
+        }
+      ]
+    },
+    {
+      "row": 4,
+      "id_candidates": [],
+      "ocr_name_clean": "",
+      "id_crop_path": "row_4_id.png",
+      "name_crop_path": "row_4_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 0.0,
+      "method": "no_number_no_name",
+      "top_candidates": []
+    },
+    {
+      "row": 5,
+      "id_candidates": [],
+      "ocr_name_clean": "pna a",
+      "id_crop_path": "row_5_id.png",
+      "name_crop_path": "row_5_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 30.588235294117645,
+      "method": "ambiguous_manual_review",
+      "top_candidates": [
+        {
+          "emp_id": "100915",
+          "name_original": "Ali Al Hinai",
+          "name_score": 47.05882352941176,
+          "number_score": 0.0,
+          "total_score": 30.588235294117645
+        },
+        {
+          "emp_id": "100438",
+          "name_original": "Mazyad Al Khan",
+          "name_score": 42.10526315789473,
+          "number_score": 0.0,
+          "total_score": 27.36842105263158
+        },
+        {
+          "emp_id": "100843",
+          "name_original": "Salim Al Kindi",
+          "name_score": 42.10526315789473,
+          "number_score": 0.0,
+          "total_score": 27.36842105263158
+        },
+        {
+          "emp_id": "100805",
+          "name_original": "Sumaiya Al Kindi",
+          "name_score": 38.095238095238095,
+          "number_score": 0.0,
+          "total_score": 24.761904761904763
+        },
+        {
+          "emp_id": "100946",
+          "name_original": "Nader Al Balushi",
+          "name_score": 38.095238095238095,
+          "number_score": 0.0,
+          "total_score": 24.761904761904763
+        }
+      ]
+    },
+    {
+      "row": 6,
+      "id_candidates": [],
+      "ocr_name_clean": "ak kul",
+      "id_crop_path": "row_6_id.png",
+      "name_crop_path": "row_6_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 26.0,
+      "method": "ambiguous_manual_review",
+      "top_candidates": [
+        {
+          "emp_id": "100843",
+          "name_original": "Salim Al Kindi",
+          "name_score": 40.0,
+          "number_score": 0.0,
+          "total_score": 26.0
+        },
+        {
+          "emp_id": "100851",
+          "name_original": "Khalid Al Hamdi",
+          "name_score": 38.095238095238095,
+          "number_score": 0.0,
+          "total_score": 24.761904761904763
+        },
+        {
+          "emp_id": "100945",
+          "name_original": "Amur AL Maqbali",
+          "name_score": 38.095238095238095,
+          "number_score": 0.0,
+          "total_score": 24.761904761904763
+        },
+        {
+          "emp_id": "101098",
+          "name_original": "Balakrishnan Kaliyaperumal",
+          "name_score": 37.5,
+          "number_score": 0.0,
+          "total_score": 24.375
+        },
+        {
+          "emp_id": "100805",
+          "name_original": "Sumaiya Al Kindi",
+          "name_score": 36.36363636363637,
+          "number_score": 0.0,
+          "total_score": 23.63636363636364
+        }
+      ]
+    }
+  ],
+  "final_employee_ids": [
+    [
+      "101754",
+      90.9090909090909
+    ]
+  ]
+}

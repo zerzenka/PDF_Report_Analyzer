@@ -1,0 +1,199 @@
+{
+  "rows": [
+    {
+      "row": 0,
+      "id_candidates": [
+        "10154"
+      ],
+      "ocr_name_clean": "",
+      "id_crop_path": "row_0_id.png",
+      "name_crop_path": "row_0_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 0.0,
+      "method": "no_number_no_name",
+      "top_candidates": []
+    },
+    {
+      "row": 1,
+      "id_candidates": [
+        "106202"
+      ],
+      "ocr_name_clean": "monsh",
+      "id_crop_path": "row_1_id.png",
+      "name_crop_path": "row_1_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 55.83333333333333,
+      "method": "ambiguous_manual_review",
+      "top_candidates": [
+        {
+          "emp_id": "101292",
+          "name_original": "Manish Vyas",
+          "name_score": 50.0,
+          "number_score": 66.66666666666667,
+          "total_score": 55.83333333333333
+        },
+        {
+          "emp_id": "100299",
+          "name_original": "Mohammed Al Washahi",
+          "name_score": 33.333333333333336,
+          "number_score": 66.66666666666667,
+          "total_score": 45.0
+        },
+        {
+          "emp_id": "100278",
+          "name_original": "Ishaq Mohammed",
+          "name_score": 31.57894736842105,
+          "number_score": 66.66666666666667,
+          "total_score": 43.859649122807014
+        },
+        {
+          "emp_id": "101407",
+          "name_original": "Ahmed AL Shahi",
+          "name_score": 31.57894736842105,
+          "number_score": 50.0,
+          "total_score": 38.026315789473685
+        },
+        {
+          "emp_id": "100757",
+          "name_original": "Ahmed Al Shibli",
+          "name_score": 30.000000000000004,
+          "number_score": 50.0,
+          "total_score": 37.0
+        }
+      ]
+    },
+    {
+      "row": 2,
+      "id_candidates": [
+        "180818"
+      ],
+      "ocr_name_clean": "gonal",
+      "id_crop_path": "row_2_id.png",
+      "name_crop_path": "row_2_name.png",
+      "resolved_id": "100818",
+      "resolved_name": "patitapaban samal",
+      "confidence": 83.33333333333334,
+      "method": "number_fuzzy_recovery",
+      "top_candidates": [
+        {
+          "emp_id": "100818",
+          "number_score": 83.33333333333334
+        }
+      ]
+    },
+    {
+      "row": 3,
+      "id_candidates": [
+        "103457"
+      ],
+      "ocr_name_clean": "ko",
+      "id_crop_path": "row_3_id.png",
+      "name_crop_path": "row_3_name.png",
+      "resolved_id": "100457",
+      "resolved_name": "adil al abri",
+      "confidence": 83.33333333333334,
+      "method": "number_fuzzy_recovery",
+      "top_candidates": [
+        {
+          "emp_id": "100457",
+          "number_score": 83.33333333333334
+        }
+      ]
+    },
+    {
+      "row": 4,
+      "id_candidates": [
+        "00449"
+      ],
+      "ocr_name_clean": "faha",
+      "id_crop_path": "row_4_id.png",
+      "name_crop_path": "row_4_name.png",
+      "resolved_id": "100449",
+      "resolved_name": "fahad al jabri",
+      "confidence": 90.9090909090909,
+      "method": "number_fuzzy_recovery",
+      "top_candidates": [
+        {
+          "emp_id": "100449",
+          "number_score": 90.9090909090909
+        }
+      ]
+    },
+    {
+      "row": 5,
+      "id_candidates": [],
+      "ocr_name_clean": "",
+      "id_crop_path": "row_5_id.png",
+      "name_crop_path": "row_5_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 0.0,
+      "method": "no_number_no_name",
+      "top_candidates": []
+    },
+    {
+      "row": 6,
+      "id_candidates": [],
+      "ocr_name_clean": "dis",
+      "id_crop_path": "row_6_id.png",
+      "name_crop_path": "row_6_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 22.941176470588232,
+      "method": "ambiguous_manual_review",
+      "top_candidates": [
+        {
+          "emp_id": "100843",
+          "name_original": "Salim Al Kindi",
+          "name_score": 35.29411764705882,
+          "number_score": 0.0,
+          "total_score": 22.941176470588232
+        },
+        {
+          "emp_id": "100805",
+          "name_original": "Sumaiya Al Kindi",
+          "name_score": 31.57894736842105,
+          "number_score": 0.0,
+          "total_score": 20.526315789473685
+        },
+        {
+          "emp_id": "101388",
+          "name_original": "Mohammed Al Risi",
+          "name_score": 31.57894736842105,
+          "number_score": 0.0,
+          "total_score": 20.526315789473685
+        },
+        {
+          "emp_id": "100948",
+          "name_original": "Darwish Al Maamari",
+          "name_score": 28.57142857142857,
+          "number_score": 0.0,
+          "total_score": 18.57142857142857
+        },
+        {
+          "emp_id": "101292",
+          "name_original": "Manish Vyas",
+          "name_score": 28.57142857142857,
+          "number_score": 0.0,
+          "total_score": 18.57142857142857
+        }
+      ]
+    }
+  ],
+  "final_employee_ids": [
+    [
+      "100818",
+      83.33333333333334
+    ],
+    [
+      "100457",
+      83.33333333333334
+    ],
+    [
+      "100449",
+      90.9090909090909
+    ]
+  ]
+}

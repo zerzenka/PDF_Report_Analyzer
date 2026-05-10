@@ -7,6 +7,8 @@ from typing import Any, Dict, List
 from datetime import datetime
 from urllib.parse import quote  # NEW: for URL-safe filenames
 
+import os
+
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
@@ -25,13 +27,21 @@ app = FastAPI(title="PDF Report Analyzer")
 # --------------------------------------------------
 # Paths
 # --------------------------------------------------
-SHARED_ROOT = Path(r"I:\60 - Services\30 - BI\010 - Shared\HP_app")
+_DEFAULT_SHARED_ROOT = Path(r"I:\60 - Services\30 - BI\010 - Shared\HP_app")
+SHARED_ROOT = Path(os.getenv("HP_APP_ROOT", str(_DEFAULT_SHARED_ROOT)))
 
-INPUT_DIR = SHARED_ROOT / "input_pdfs"
-EXPORTS_ROOT = SHARED_ROOT / "exports"
+INPUT_DIR = Path(os.getenv("HP_INPUT_DIR", str(SHARED_ROOT / "input_pdfs")))
+EXPORTS_ROOT = Path(os.getenv("HP_EXPORTS_ROOT", str(SHARED_ROOT / "exports")))
 
 UPLOAD_DIR = Path("uploaded_pdfs")  # local uploads (optional)
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+# Where /review looks for batches (subfolders named export_*)
+print(
+    f"[PATHS] EXPORTS_ROOT={EXPORTS_ROOT} "
+    f"(exists={EXPORTS_ROOT.exists()}) — batches = child dirs named export_*"
+)
+print(f"[PATHS] INPUT_DIR={INPUT_DIR} (exists={INPUT_DIR.exists()})")
 
 # --------------------------------------------------
 # Templates (UI)
@@ -356,13 +366,18 @@ async def review_page(request: Request):
 # ==================================================
 # API: list batches
 # ==================================================
+def _is_complete_export_batch(p: Path) -> bool:
+    """Ignore partial/crashed folders (e.g. OCR failed mid-run)."""
+    return p.is_dir() and (p / "manifest.json").is_file() and (p / "docs").is_dir()
+
+
 @app.get("/api/batches")
 def api_batches():
     if not EXPORTS_ROOT.exists():
         return JSONResponse({"batches": []})
 
     batches = sorted(
-        [p for p in EXPORTS_ROOT.iterdir() if p.is_dir() and p.name.startswith("export_")],
+        [p for p in EXPORTS_ROOT.iterdir() if _is_complete_export_batch(p) and p.name.startswith("export_")],
         key=lambda p: p.name,
         reverse=True,
     )

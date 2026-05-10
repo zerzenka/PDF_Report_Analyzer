@@ -15,3 +15,4 @@ debug_*.png
 # Local test scripts
 test_easyocr.py
 
+.env

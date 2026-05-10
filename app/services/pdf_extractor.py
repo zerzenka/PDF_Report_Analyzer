@@ -6,7 +6,7 @@ import cv2
 from typing import Dict, List, Tuple, Optional
 
 from app.config.template_ops_a3 import TEMPLATE_OPS_A3
-from app.ocr_easyocr import read_ids_from_crop, read_name_from_crop, get_reader
+from app.ocr_easyocr import read_ids_from_crops, read_names_from_crops, get_reader
 from app.services.employee_db import EmployeeDB
 from app.services.identity_resolver import resolve_identity
 
@@ -100,18 +100,15 @@ def trim_left_only(img: np.ndarray, threshold: int = 210) -> np.ndarray:
 # ==================================================
 # OCR anchor finder
 # ==================================================
-def find_ops_anchors_image(page):
-    # You can drop this to 120 if you want more speed:
-    full_img = page.to_image(resolution=180).original
-
-    if DEBUG_GEOMETRY:
-        full_img.save("debug_full_for_anchors.png")
-
-    img_np = np.array(full_img)
+def find_ops_anchors_image(img_np: np.ndarray, page_w: float, page_h: float):
+    """
+    Find NAME / SA ID anchors using OCR on the already-rendered page image.
+    Returns anchors in PDF coordinate space.
+    """
     img_h, img_w = img_np.shape[:2]
 
-    scale_x = page.width / img_w
-    scale_y = page.height / img_h
+    scale_x = page_w / img_w
+    scale_y = page_h / img_h
 
     reader = get_reader()
     results = reader.readtext(img_np, detail=1)
@@ -145,7 +142,7 @@ def find_ops_anchors_image(page):
     if not name_candidates or not id_candidates:
         raise ValueError("Could not detect NAME / SA ID anchors")
 
-    PAGE_H = page.height
+    PAGE_H = page_h
 
     def is_middle(a):
         return PAGE_H * 0.3 < a["top"] < PAGE_H * 0.7
@@ -200,7 +197,7 @@ def extract_fields_from_pdf(
         # -----------------------------------
         # Anchors
         # -----------------------------------
-        name_anchor, id_anchor = find_ops_anchors_image(page)
+        name_anchor, id_anchor = find_ops_anchors_image(fast_np, PAGE_W, PAGE_H)
 
         # -----------------------------------
         # Columns (PDF-space)
@@ -252,6 +249,9 @@ def extract_fields_from_pdf(
         crop_scale_id = cfg.get("crop_scale_id", 0.6)
 
         extracted_rows: List[Dict] = []
+        id_crops: List[np.ndarray] = []
+        name_crops: List[np.ndarray] = []
+        row_indices: List[int] = []
 
         for i in range(rows):
             step = row_height + row_gap
@@ -302,10 +302,6 @@ def extract_fields_from_pdf(
                 cv2.imwrite(f"debug_{pdf_name}_row_{i}_id_fast.png", id_crop_trim)
                 cv2.imwrite(f"debug_{pdf_name}_row_{i}_name_fast.png", name_crop_trim)
 
-            # OCR
-            id_candidates = read_ids_from_crop(id_crop_trim, row_index=i)
-            name_clean = read_name_from_crop(name_crop_trim, row_index=i)
-
             # Save crops for export package
             id_crop_path = None
             name_crop_path = None
@@ -316,20 +312,39 @@ def extract_fields_from_pdf(
                 cv2.imwrite(str(out_path / id_crop_path), id_crop_trim)
                 cv2.imwrite(str(out_path / name_crop_path), name_crop_trim)
 
-            row_obj = {
-                "row": i,
-                "id_candidates": id_candidates,
-                "ocr_name_clean": name_clean,
-                "id_crop_path": id_crop_path,
-                "name_crop_path": name_crop_path,
-            }
+            extracted_rows.append(
+                {
+                    "row": i,
+                    "id_candidates": [],  # filled after batched OCR
+                    "ocr_name_clean": "",  # filled after batched OCR
+                    "id_crop_path": id_crop_path,
+                    "name_crop_path": name_crop_path,
+                    **(
+                        {
+                            "id_crop_data_url": img_to_data_url(id_crop_trim),
+                            "name_crop_data_url": img_to_data_url(name_crop_trim),
+                        }
+                        if embed_data_urls
+                        else {}
+                    ),
+                }
+            )
 
-            # Optional embed (for your current single-page UI mode)
-            if embed_data_urls:
-                row_obj["id_crop_data_url"] = img_to_data_url(id_crop_trim)
-                row_obj["name_crop_data_url"] = img_to_data_url(name_crop_trim)
+            id_crops.append(id_crop_trim)
+            name_crops.append(name_crop_trim)
+            row_indices.append(i)
 
-            extracted_rows.append(row_obj)
+        # -----------------------------------
+        # OCR (batched)
+        # -----------------------------------
+        if id_crops:
+            ids_per_row = read_ids_from_crops(id_crops)
+            names_per_row = read_names_from_crops(name_crops)
+
+            for k, row_idx in enumerate(row_indices):
+                # extracted_rows is built in same order as row_indices
+                extracted_rows[k]["id_candidates"] = ids_per_row[k]
+                extracted_rows[k]["ocr_name_clean"] = names_per_row[k]
 
     # ==================================================
     # Resolve identities

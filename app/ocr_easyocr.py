@@ -1,6 +1,6 @@
 import threading
 import re
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 import cv2
 import easyocr
@@ -52,6 +52,135 @@ def _remove_horizontal_lines(gray_np: np.ndarray) -> np.ndarray:
     return cleaned
 
 
+def _reader_readtext_batch(reader, images: Sequence[np.ndarray], *, allowlist: str) -> List[List[str]]:
+    """
+    Return list-of-texts per image (one list of strings per input crop).
+
+    Note: easyocr.Reader.readtext_batched requires every image to have the same
+    H×W (unless n_width/n_height resize all inputs). Row crops differ in size,
+    so we always use readtext per image here to avoid NumPy inhomogeneous-shape
+    errors inside EasyOCR.
+    """
+    if not images:
+        return []
+
+    results: List[List[str]] = []
+    for img in images:
+        texts = reader.readtext(
+            img,
+            detail=0,
+            allowlist=allowlist,
+            paragraph=False,
+        )
+        results.append(list(texts or []))
+    return results
+
+
+def _extract_id_candidates_from_texts(texts: Sequence[str]) -> List[str]:
+    candidates: List[str] = []
+    for t in texts:
+        digits = re.sub(r"\D", "", t)
+        if len(digits) == 6:
+            candidates.append(digits)
+        elif len(digits) == 5:
+            candidates.append(digits)
+
+    # De-duplicate (preserve order), prefer 6-digit first
+    seen = set()
+    unique: List[str] = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+    unique6 = [c for c in unique if len(c) == 6]
+    unique5 = [c for c in unique if len(c) == 5]
+    return unique6 + unique5
+
+
+def read_ids_from_crops(crops_rgb: Sequence[np.ndarray]) -> List[List[str]]:
+    """
+    OCR multiple cropped rows containing handwritten employee IDs.
+
+    Returns:
+        A list per crop: digit-only OCR candidates (prefer 6 digits; keep 5-digit fallback).
+    """
+    reader = get_reader()
+    if not crops_rgb:
+        return []
+
+    # Preprocess all crops once
+    cleaned_list: List[np.ndarray] = []
+    bw_list: List[np.ndarray] = []
+    for crop in crops_rgb:
+        img = Image.fromarray(crop)
+        gray = img.convert("L")
+        gray = ImageOps.autocontrast(gray)
+        gray = gray.filter(ImageFilter.MedianFilter(3))
+        gray_np = np.array(gray, dtype=np.uint8)
+
+        cleaned_np = _remove_horizontal_lines(gray_np)
+        cleaned_list.append(cleaned_np)
+
+        bw = cv2.adaptiveThreshold(
+            cleaned_np, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            21, 10
+        )
+        bw = cv2.resize(bw, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+        bw_list.append(bw)
+
+    # Pass 1 (fast): cleaned grayscale
+    cleaned_texts = _reader_readtext_batch(reader, cleaned_list, allowlist="0123456789")
+    out: List[List[str]] = [_extract_id_candidates_from_texts(t) for t in cleaned_texts]
+
+    # Pass 2 (fallback only where needed): binarized
+    need_idx = [i for i, cands in enumerate(out) if not cands]
+    if need_idx:
+        bw_images = [bw_list[i] for i in need_idx]
+        bw_texts = _reader_readtext_batch(reader, bw_images, allowlist="0123456789")
+        for j, texts in enumerate(bw_texts):
+            i = need_idx[j]
+            out[i] = _extract_id_candidates_from_texts(texts)
+
+    return out
+
+
+def read_names_from_crops(crops_rgb: Sequence[np.ndarray]) -> List[str]:
+    """
+    OCR multiple cropped rows containing handwritten employee names.
+    """
+    reader = get_reader()
+    if not crops_rgb:
+        return []
+
+    cleaned_list: List[np.ndarray] = []
+    for crop in crops_rgb:
+        img = Image.fromarray(crop)
+        gray = img.convert("L")
+        gray = ImageOps.autocontrast(gray)
+        gray = gray.filter(ImageFilter.MedianFilter(3))
+        gray_np = np.array(gray, dtype=np.uint8)
+
+        cleaned_np = _remove_horizontal_lines(gray_np)
+        cleaned_np = cv2.resize(
+            cleaned_np,
+            None,
+            fx=2.0,
+            fy=2.0,
+            interpolation=cv2.INTER_CUBIC
+        )
+        cleaned_list.append(cleaned_np)
+
+    texts_per = _reader_readtext_batch(
+        reader,
+        cleaned_list,
+        allowlist="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ -",
+    )
+    raw_names = [" ".join(t).strip() for t in texts_per]
+    return [_clean_name_text(x) for x in raw_names]
+
+
 # --------------------------------------------------
 # OCR: Handwritten EMPLOYEE ID (numbers)
 # --------------------------------------------------
@@ -62,99 +191,11 @@ def read_ids_from_crop(crop_rgb: np.ndarray, row_index: Optional[int] = None) ->
     Returns:
         List of digit-only OCR candidates (prefer 6 digits; keep 5-digit as fallback)
     """
-    reader = get_reader()
-
-    # -------------------------------
-    # DEBUG: raw crop
-    # -------------------------------
     if DEBUG_OCR and row_index is not None:
         Image.fromarray(crop_rgb).save(f"debug_sa_id_raw_row_{row_index}.png")
 
-    # -------------------------------
-    # Preprocessing (PIL -> gray)
-    # -------------------------------
-    img = Image.fromarray(crop_rgb)
-
-    gray = img.convert("L")
-    gray = ImageOps.autocontrast(gray)
-    gray = gray.filter(ImageFilter.MedianFilter(3))
-
-    gray_np = np.array(gray, dtype=np.uint8)
-
-    # -------------------------------
-    # Remove table lines
-    # -------------------------------
-    cleaned_np = _remove_horizontal_lines(gray_np)
-
-    if DEBUG_OCR and row_index is not None:
-        Image.fromarray(cleaned_np).save(f"debug_sa_id_cleaned_row_{row_index}.png")
-
-    # -------------------------------
-    # Conservative binarized variant (NO dilation)
-    # Helps cases like 7↔4 without creating blobs
-    # -------------------------------
-    bw = cv2.adaptiveThreshold(
-        cleaned_np, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        21, 10
-    )
-    bw = cv2.resize(bw, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
-
-    if DEBUG_OCR and row_index is not None:
-        Image.fromarray(bw).save(f"debug_sa_id_bw_row_{row_index}.png")
-
-    # -------------------------------
-    # OCR enhancement variants
-    # -------------------------------
-    sharpen_kernel = np.array([
-        [0, -1, 0],
-        [-1, 5, -1],
-        [0, -1, 0]
-    ])
-
-    variants = [
-        cleaned_np,
-        cv2.convertScaleAbs(cleaned_np, alpha=1.15, beta=0),
-        cv2.convertScaleAbs(cleaned_np, alpha=0.90, beta=0),
-        cv2.filter2D(cleaned_np, -1, sharpen_kernel),
-        bw,
-    ]
-
-    # -------------------------------
-    # OCR passes
-    # -------------------------------
-    candidates: List[str] = []
-
-    for v in variants:
-        texts = reader.readtext(
-            v,
-            detail=0,
-            allowlist="0123456789",
-            paragraph=False,
-        )
-
-        for t in texts:
-            digits = re.sub(r"\D", "", t)
-            if len(digits) == 6:
-                candidates.append(digits)
-            elif len(digits) == 5:
-                candidates.append(digits)
-
-    # -------------------------------
-    # De-duplicate (preserve order)
-    # -------------------------------
-    seen = set()
-    unique: List[str] = []
-    for c in candidates:
-        if c not in seen:
-            seen.add(c)
-            unique.append(c)
-
-    # Prefer 6-digit IDs first
-    unique6 = [c for c in unique if len(c) == 6]
-    unique5 = [c for c in unique if len(c) == 5]
-    return unique6 + unique5
+    out = read_ids_from_crops([crop_rgb])[0]
+    return out
 
 
 # --------------------------------------------------
@@ -174,51 +215,14 @@ def read_name_from_crop(crop_rgb: np.ndarray, row_index: Optional[int] = None) -
     Returns:
         Cleaned name string (lowercase letters + spaces)
     """
-    reader = get_reader()
-
     # -------------------------------
     # DEBUG: raw crop
     # -------------------------------
     if DEBUG_OCR and row_index is not None:
         Image.fromarray(crop_rgb).save(f"debug_name_raw_row_{row_index}.png")
 
-    # -------------------------------
-    # Preprocessing
-    # -------------------------------
-    img = Image.fromarray(crop_rgb)
-
-    gray = img.convert("L")
-    gray = ImageOps.autocontrast(gray)
-    gray = gray.filter(ImageFilter.MedianFilter(3))
-
-    gray_np = np.array(gray, dtype=np.uint8)
-
-    cleaned_np = _remove_horizontal_lines(gray_np)
-
-    # Upscale (big boost for handwriting OCR)
-    cleaned_np = cv2.resize(
-        cleaned_np,
-        None,
-        fx=2.0,
-        fy=2.0,
-        interpolation=cv2.INTER_CUBIC
-    )
-
-    if DEBUG_OCR and row_index is not None:
-        Image.fromarray(cleaned_np).save(f"debug_name_cleaned_row_{row_index}.png")
-
-    # -------------------------------
-    # OCR
-    # -------------------------------
-    texts = reader.readtext(
-        cleaned_np,
-        detail=0,
-        allowlist="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ -",
-        paragraph=False,
-    )
-
-    raw_name = " ".join(texts).strip()
-    return _clean_name_text(raw_name)
+    out = read_names_from_crops([crop_rgb])[0]
+    return out
 
 
 

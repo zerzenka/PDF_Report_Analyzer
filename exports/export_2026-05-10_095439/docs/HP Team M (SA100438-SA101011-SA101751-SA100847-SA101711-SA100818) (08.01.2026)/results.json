@@ -1,0 +1,233 @@
+{
+  "rows": [
+    {
+      "row": 0,
+      "id_candidates": [],
+      "ocr_name_clean": "yaic sie",
+      "id_crop_path": "row_0_id.png",
+      "name_crop_path": "row_0_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 35.45454545454545,
+      "method": "ambiguous_manual_review",
+      "top_candidates": [
+        {
+          "emp_id": "101010",
+          "name_original": "Yasir Al Farsi",
+          "name_score": 54.54545454545454,
+          "number_score": 0.0,
+          "total_score": 35.45454545454545
+        },
+        {
+          "emp_id": "100950",
+          "name_original": "Said Al Issai",
+          "name_score": 47.61904761904761,
+          "number_score": 0.0,
+          "total_score": 30.95238095238095
+        },
+        {
+          "emp_id": "101533",
+          "name_original": "Raid AL Farsi",
+          "name_score": 47.61904761904761,
+          "number_score": 0.0,
+          "total_score": 30.95238095238095
+        },
+        {
+          "emp_id": "100845",
+          "name_original": "Said Al Kishri",
+          "name_score": 45.45454545454546,
+          "number_score": 0.0,
+          "total_score": 29.54545454545455
+        },
+        {
+          "emp_id": "101043",
+          "name_original": "Yahya Al Saidi",
+          "name_score": 45.45454545454546,
+          "number_score": 0.0,
+          "total_score": 29.54545454545455
+        }
+      ]
+    },
+    {
+      "row": 1,
+      "id_candidates": [],
+      "ocr_name_clean": "j ski",
+      "id_crop_path": "row_1_id.png",
+      "name_crop_path": "row_1_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 27.36842105263158,
+      "method": "ambiguous_manual_review",
+      "top_candidates": [
+        {
+          "emp_id": "101553",
+          "name_original": "Salim AL jabri",
+          "name_score": 42.10526315789473,
+          "number_score": 0.0,
+          "total_score": 27.36842105263158
+        },
+        {
+          "emp_id": "101343",
+          "name_original": "Ali Hussain",
+          "name_score": 37.5,
+          "number_score": 0.0,
+          "total_score": 24.375
+        },
+        {
+          "emp_id": "100771",
+          "name_original": "Khalid Al Balushi",
+          "name_score": 36.36363636363637,
+          "number_score": 0.0,
+          "total_score": 23.63636363636364
+        },
+        {
+          "emp_id": "101549",
+          "name_original": "Khalil AL Balushi",
+          "name_score": 36.36363636363637,
+          "number_score": 0.0,
+          "total_score": 23.63636363636364
+        },
+        {
+          "emp_id": "101065",
+          "name_original": "Ali Al Hosni",
+          "name_score": 35.29411764705882,
+          "number_score": 0.0,
+          "total_score": 22.941176470588232
+        }
+      ]
+    },
+    {
+      "row": 2,
+      "id_candidates": [],
+      "ocr_name_clean": "a c",
+      "id_crop_path": "row_2_id.png",
+      "name_crop_path": "row_2_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 18.57142857142857,
+      "method": "ambiguous_manual_review",
+      "top_candidates": [
+        {
+          "emp_id": "101292",
+          "name_original": "Manish Vyas",
+          "name_score": 28.57142857142857,
+          "number_score": 0.0,
+          "total_score": 18.57142857142857
+        },
+        {
+          "emp_id": "101343",
+          "name_original": "Ali Hussain",
+          "name_score": 28.57142857142857,
+          "number_score": 0.0,
+          "total_score": 18.57142857142857
+        },
+        {
+          "emp_id": "100421",
+          "name_original": "Ali Al Alawi",
+          "name_score": 26.66666666666667,
+          "number_score": 0.0,
+          "total_score": 17.333333333333336
+        },
+        {
+          "emp_id": "100457",
+          "name_original": "Adil Al Abri",
+          "name_score": 26.66666666666667,
+          "number_score": 0.0,
+          "total_score": 17.333333333333336
+        },
+        {
+          "emp_id": "100776",
+          "name_original": "Juma Al Abri",
+          "name_score": 26.66666666666667,
+          "number_score": 0.0,
+          "total_score": 17.333333333333336
+        }
+      ]
+    },
+    {
+      "row": 3,
+      "id_candidates": [],
+      "ocr_name_clean": "",
+      "id_crop_path": "row_3_id.png",
+      "name_crop_path": "row_3_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 0.0,
+      "method": "no_number_no_name",
+      "top_candidates": []
+    },
+    {
+      "row": 4,
+      "id_candidates": [],
+      "ocr_name_clean": "sa",
+      "id_crop_path": "row_4_id.png",
+      "name_crop_path": "row_4_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 20.0,
+      "method": "ambiguous_manual_review",
+      "top_candidates": [
+        {
+          "emp_id": "101292",
+          "name_original": "Manish Vyas",
+          "name_score": 30.76923076923077,
+          "number_score": 0.0,
+          "total_score": 20.0
+        },
+        {
+          "emp_id": "101343",
+          "name_original": "Ali Hussain",
+          "name_score": 30.76923076923077,
+          "number_score": 0.0,
+          "total_score": 20.0
+        },
+        {
+          "emp_id": "100950",
+          "name_original": "Said Al Issai",
+          "name_score": 26.66666666666667,
+          "number_score": 0.0,
+          "total_score": 17.333333333333336
+        },
+        {
+          "emp_id": "101533",
+          "name_original": "Raid AL Farsi",
+          "name_score": 26.66666666666667,
+          "number_score": 0.0,
+          "total_score": 17.333333333333336
+        },
+        {
+          "emp_id": "100278",
+          "name_original": "Ishaq Mohammed",
+          "name_score": 25.0,
+          "number_score": 0.0,
+          "total_score": 16.25
+        }
+      ]
+    },
+    {
+      "row": 5,
+      "id_candidates": [],
+      "ocr_name_clean": "",
+      "id_crop_path": "row_5_id.png",
+      "name_crop_path": "row_5_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 0.0,
+      "method": "no_number_no_name",
+      "top_candidates": []
+    },
+    {
+      "row": 6,
+      "id_candidates": [],
+      "ocr_name_clean": "",
+      "id_crop_path": "row_6_id.png",
+      "name_crop_path": "row_6_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 0.0,
+      "method": "no_number_no_name",
+      "top_candidates": []
+    }
+  ],
+  "final_employee_ids": []
+}

@@ -1,0 +1,132 @@
+{
+  "rows": [
+    {
+      "row": 0,
+      "id_candidates": [
+        "101754"
+      ],
+      "ocr_name_clean": "oi",
+      "id_crop_path": "row_0_id.png",
+      "name_crop_path": "row_0_name.png",
+      "resolved_id": "101754",
+      "resolved_name": "gayth al saadi",
+      "confidence": 85.0,
+      "method": "number_only_name_mismatch",
+      "top_candidates": []
+    },
+    {
+      "row": 1,
+      "id_candidates": [],
+      "ocr_name_clean": "",
+      "id_crop_path": "row_1_id.png",
+      "name_crop_path": "row_1_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 0.0,
+      "method": "no_number_no_name",
+      "top_candidates": []
+    },
+    {
+      "row": 2,
+      "id_candidates": [],
+      "ocr_name_clean": "",
+      "id_crop_path": "row_2_id.png",
+      "name_crop_path": "row_2_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 0.0,
+      "method": "no_number_no_name",
+      "top_candidates": []
+    },
+    {
+      "row": 3,
+      "id_candidates": [],
+      "ocr_name_clean": "",
+      "id_crop_path": "row_3_id.png",
+      "name_crop_path": "row_3_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 0.0,
+      "method": "no_number_no_name",
+      "top_candidates": []
+    },
+    {
+      "row": 4,
+      "id_candidates": [],
+      "ocr_name_clean": "",
+      "id_crop_path": "row_4_id.png",
+      "name_crop_path": "row_4_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 0.0,
+      "method": "no_number_no_name",
+      "top_candidates": []
+    },
+    {
+      "row": 5,
+      "id_candidates": [],
+      "ocr_name_clean": "sato l",
+      "id_crop_path": "row_5_id.png",
+      "name_crop_path": "row_5_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 35.45454545454545,
+      "method": "ambiguous_manual_review",
+      "top_candidates": [
+        {
+          "emp_id": "101169",
+          "name_original": "Santosh Nalawade",
+          "name_score": 54.54545454545454,
+          "number_score": 0.0,
+          "total_score": 35.45454545454545
+        },
+        {
+          "emp_id": "101343",
+          "name_original": "Ali Hussain",
+          "name_score": 47.05882352941176,
+          "number_score": 0.0,
+          "total_score": 30.588235294117645
+        },
+        {
+          "emp_id": "100938",
+          "name_original": "Maktoom Al Zeidi",
+          "name_score": 45.45454545454546,
+          "number_score": 0.0,
+          "total_score": 29.54545454545455
+        },
+        {
+          "emp_id": "101065",
+          "name_original": "Ali Al Hosni",
+          "name_score": 44.44444444444444,
+          "number_score": 0.0,
+          "total_score": 28.88888888888889
+        },
+        {
+          "emp_id": "100947",
+          "name_original": "Jasim Al Marzooqi",
+          "name_score": 43.47826086956522,
+          "number_score": 0.0,
+          "total_score": 28.260869565217394
+        }
+      ]
+    },
+    {
+      "row": 6,
+      "id_candidates": [],
+      "ocr_name_clean": "",
+      "id_crop_path": "row_6_id.png",
+      "name_crop_path": "row_6_name.png",
+      "resolved_id": null,
+      "resolved_name": "",
+      "confidence": 0.0,
+      "method": "no_number_no_name",
+      "top_candidates": []
+    }
+  ],
+  "final_employee_ids": [
+    [
+      "101754",
+      85.0
+    ]
+  ]
+}
