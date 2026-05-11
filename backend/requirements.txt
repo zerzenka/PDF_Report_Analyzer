@@ -8,3 +8,5 @@ Pillow>=10
 azure-ai-documentintelligence>=1.0.0
 rapidfuzz>=3.6
 pypdfium2>=5.3.0
+python-dotenv>=1.0
+openpyxl>=3.1

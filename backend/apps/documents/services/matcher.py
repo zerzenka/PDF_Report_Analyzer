@@ -23,7 +23,7 @@ def get_employee_type(clean_id: str) -> str:
 def match_row(ocr_name: str, ocr_id_raw: str) -> dict[str, Any]:
     """
     Score formula:
-      name_score  = rapidfuzz.fuzz.token_sort_ratio(ocr_name, candidate_name)
+      name_score  = token_sort_ratio on lowercased names (case-insensitive)
       id_score    = rapidfuzz.fuzz.ratio(clean_id, candidate_id)
       total_score = (name_score * 0.65) + (id_score * 0.35)
 
@@ -35,6 +35,7 @@ def match_row(ocr_name: str, ocr_id_raw: str) -> dict[str, Any]:
     Returns top 5 candidates + recommended resolution.
     """
     ocr_name = (ocr_name or "").strip()
+    ocr_name_lower = ocr_name.lower()
     raw_id = (ocr_id_raw or "").strip()
     cid = clean_id(raw_id)
     emp_type = get_employee_type(cid)
@@ -47,8 +48,13 @@ def match_row(ocr_name: str, ocr_id_raw: str) -> dict[str, Any]:
     for e in qs.only("employee_id", "full_name", "type"):
         cand_id = str(e.employee_id or "")
         cand_name = str(e.full_name or "")
+        cand_name_lower = cand_name.lower()
 
-        name_score = fuzz.token_sort_ratio(ocr_name, cand_name) if ocr_name and cand_name else 0.0
+        name_score = (
+            fuzz.token_sort_ratio(ocr_name_lower, cand_name_lower)
+            if ocr_name and cand_name
+            else 0.0
+        )
         id_score = fuzz.ratio(cid, cand_id) if cid and cand_id else 0.0
         total = (name_score * 0.65) + (id_score * 0.35)
 

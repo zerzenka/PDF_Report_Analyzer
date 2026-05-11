@@ -1,208 +1,259 @@
 from __future__ import annotations
 
-import math
-import uuid
+import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Iterable
-
-from django.conf import settings
-from PIL import Image
 
 
 @dataclass(frozen=True)
-class _Word:
+class _AzureWord:
+    idx: int
     text: str
-    bbox: tuple[float, float, float, float]  # x0,y0,x1,y1 in OCR page coords
+    polygon: tuple[float, float, float, float, float, float, float, float]  # 4 points x/y
+
+    @property
+    def x_left(self) -> float:
+        return float(self.polygon[0])
+
+    @property
+    def y_top(self) -> float:
+        return float(self.polygon[1])
+
+    @property
+    def x_right(self) -> float:
+        return float(max(self.polygon[0], self.polygon[2], self.polygon[4], self.polygon[6]))
+
+    @property
+    def y_center(self) -> float:
+        ys = (self.polygon[1], self.polygon[3], self.polygon[5], self.polygon[7])
+        return float(sum(ys) / 4.0)
+
+    @property
+    def y_bottom(self) -> float:
+        return float(max(self.polygon[1], self.polygon[3], self.polygon[5], self.polygon[7]))
+
+    @property
+    def height(self) -> float:
+        return self.y_bottom - self.y_top
 
 
-def _iter_words(azure_result: dict) -> Iterable[tuple[int, _Word, dict]]:
-    """
-    Yield (page_index, word, page_dict) for each word.
-
-    Supports Document Intelligence prebuilt-read shapes where words live under:
-    - result["pages"][i]["words"][j] with "content" and "polygon"
-    """
+def _iter_page_words(azure_result: dict, page_index: int = 0) -> Iterable[_AzureWord]:
     pages = azure_result.get("pages") or []
-    for page_index, page in enumerate(pages):
-        for w in page.get("words") or []:
-            text = str(w.get("content") or "").strip()
-            poly = w.get("polygon") or []
-            if not text or len(poly) < 8:
-                continue
-            xs = [float(poly[i]) for i in range(0, len(poly), 2)]
-            ys = [float(poly[i]) for i in range(1, len(poly), 2)]
-            bbox = (min(xs), min(ys), max(xs), max(ys))
-            yield page_index, _Word(text=text, bbox=bbox), page
+    if page_index >= len(pages):
+        return
+    page = pages[page_index] or {}
+    for idx, w in enumerate(page.get("words") or []):
+        text = str(w.get("content") or "").strip()
+        poly = w.get("polygon") or []
+        if not text or len(poly) < 8:
+            continue
+        poly8 = tuple(float(poly[i]) for i in range(8))
+        yield _AzureWord(idx=idx, text=text, polygon=poly8)  # type: ignore[arg-type]
 
 
-def _page_dims(page: dict) -> tuple[float, float]:
-    w = page.get("width")
-    h = page.get("height")
-    if w is None or h is None:
-        raise ValueError("Azure OCR page missing width/height")
-    return float(w), float(h)
+def _clean_id_digits(raw: str) -> str:
+    """
+    Clean the extracted ID per spec:
+    - strip SA / SAC / SALG / SAID prefixes (in practice: keep digits only)
+    - remove spaces (e.g. "100 740" -> "100740")
+    - return 6 digits if valid, else empty
+    """
+    raw = (raw or "").strip()
+    # Remove everything up to the first digit, then remove spaces.
+    digits_only = re.sub(r"^[^0-9]+", "", raw)
+    digits_only = re.sub(r"\s+", "", digits_only)
+    return digits_only if len(digits_only) == 6 and digits_only.isdigit() else ""
 
-
-def _render_pdf_first_page(pdf_path: str) -> Image.Image:
-    import pypdfium2 as pdfium
-
-    pdf = pdfium.PdfDocument(pdf_path)
-    page = pdf[0]
-    # A moderate scale keeps crops legible without huge files.
-    bitmap = page.render(scale=2.0)
-    return bitmap.to_pil()
-
-
-def _clamp(v: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, v))
-
-
-def _scale_bbox(
-    bbox: tuple[float, float, float, float],
-    src_w: float,
-    src_h: float,
-    dst_w: int,
-    dst_h: int,
-) -> tuple[int, int, int, int]:
-    x0, y0, x1, y1 = bbox
-    sx = dst_w / src_w
-    sy = dst_h / src_h
-    px0 = int(math.floor(_clamp(x0 * sx, 0, dst_w - 1)))
-    py0 = int(math.floor(_clamp(y0 * sy, 0, dst_h - 1)))
-    px1 = int(math.ceil(_clamp(x1 * sx, 1, dst_w)))
-    py1 = int(math.ceil(_clamp(y1 * sy, 1, dst_h)))
-    if px1 <= px0:
-        px1 = min(dst_w, px0 + 1)
-    if py1 <= py0:
-        py1 = min(dst_h, py0 + 1)
-    return px0, py0, px1, py1
+def _digits_only(raw: str) -> str:
+    # keep only digits (used for concatenating split tokens)
+    return re.sub(r"[^0-9]", "", raw or "")
 
 
 def detect_table_rows(
     azure_result: dict,
-    pdf_path: str,
-    *,
-    job_id: str,
+    *_args: Any,
     max_rows: int = 12,
+    **_kwargs: Any,
 ) -> list[dict[str, Any]]:
     """
-    Heuristic detector for HP Briefing team-member table (bottom-right).
+    Parse Azure OCR output directly (no image cropping / no re-OCR).
 
-    Returns list of dicts:
-      { ocr_name_raw, ocr_id_raw, name_crop_path, id_crop_path }
-
-    Crops are stored under MEDIA_ROOT/crops/.
+    Strategy (per spec):
+    - Document is landscape ~16.5 x 11.7 inches (Azure coords are inches for this file)
+    - Team-member table is in right half and lower portion:
+        left_x > 7.5 AND top_y > 6.0
+    - Find 'NAME' tokens in that region; each marks a row start
+    - For each NAME anchor, collect words in same horizontal band (±0.4 inches in y)
+    - Name is words with x between ~8.5 and ~11.5
+    - ID is 6-digit number after SA ID/SAID label; fallback to any 6-digit token with x > 12.0
+    - Return list of dicts: {row_index, ocr_name_raw, ocr_id_raw, ocr_id_clean}
     """
-    pages = azure_result.get("pages") or []
-    if not pages:
-        return []
-
-    # For now we assume the table is on the first page.
-    page = pages[0]
-    ocr_w, ocr_h = _page_dims(page)
-
-    words = [
-        word
-        for pidx, word, _ in _iter_words(azure_result)
-        if pidx == 0
-    ]
+    words = list(_iter_page_words(azure_result, 0))
     if not words:
         return []
 
-    # Focus on bottom-right quadrant to avoid headers/other fields.
-    br_words: list[_Word] = []
-    for w in words:
-        x0, y0, x1, y1 = w.bbox
-        cx = (x0 + x1) / 2.0
-        cy = (y0 + y1) / 2.0
-        if cx >= (0.55 * ocr_w) and cy >= (0.55 * ocr_h):
-            br_words.append(w)
+    # Region filter (in inches)
+    region = [w for w in words if (w.x_left > 7.5 and w.y_top > 6.0)]
 
-    if not br_words:
+    # Row anchors (NAME labels)
+    anchors = [
+        w
+        for w in region
+        if w.text.strip().upper() == "NAME" and (w.x_left > 7.5)
+    ]
+    anchors.sort(key=lambda w: w.y_center)
+    if not anchors:
         return []
 
-    # Cluster into "rows" by y-center using a simple bucketing threshold.
-    br_words.sort(key=lambda w: ((w.bbox[1] + w.bbox[3]) / 2.0, w.bbox[0]))
-    row_clusters: list[list[_Word]] = []
-    y_threshold = max(10.0, 0.018 * ocr_h)  # scale with page height
+    # Compute row boundaries as midpoints between consecutive NAME anchors.
+    mids: list[float] = []
+    for a, b in zip(anchors, anchors[1:]):
+        mids.append((a.y_center + b.y_center) / 2.0)
 
-    for w in br_words:
-        y = (w.bbox[1] + w.bbox[3]) / 2.0
-        if not row_clusters:
-            row_clusters.append([w])
-            continue
-        last = row_clusters[-1]
-        last_y = sum((x.bbox[1] + x.bbox[3]) / 2.0 for x in last) / len(last)
-        if abs(y - last_y) <= y_threshold:
-            last.append(w)
-        else:
-            row_clusters.append([w])
+    # Each ID token may only be used once across rows.
+    used_id_word_idxs: set[int] = set()
 
-    # Render the PDF page once and reuse.
-    page_img = _render_pdf_first_page(pdf_path)
-    img_w, img_h = page_img.size
-
-    crops_dir = Path(settings.MEDIA_ROOT) / "crops"
-    crops_dir.mkdir(parents=True, exist_ok=True)
+    exclude_name = {
+        "TEAM",
+        "MEMBER",
+        "NAME",
+        "SA",
+        "ID",
+        "SAID",
+        "SIGNATURE",
+        "SIGN",
+        "WHAT",
+        "IS",
+        "THE",
+        "WORST",
+        "THING",
+        "THAT",
+    }
 
     out: list[dict[str, Any]] = []
-    for row_index, cluster in enumerate(row_clusters[:max_rows]):
-        # Split cluster into "name-ish" and "id-ish" by x position (roughly two columns).
-        cluster_sorted = sorted(cluster, key=lambda w: w.bbox[0])
-        xs = [(w.bbox[0] + w.bbox[2]) / 2.0 for w in cluster_sorted]
-        if not xs:
-            continue
-        split_x = sorted(xs)[len(xs) // 2]
+    for idx, anchor in enumerate(anchors[:max_rows]):
+        y_low = mids[idx - 1] if idx > 0 else float("-inf")
+        y_high = mids[idx] if idx < len(mids) else float("inf")
+        # Hard maximum cutoff for the table area to prevent the "WHAT IS THE WORST THING"
+        # text block below the table from bleeding into the last row.
+        y_high = min(y_high, 8.8)
 
-        name_words = [w for w in cluster_sorted if ((w.bbox[0] + w.bbox[2]) / 2.0) <= split_x]
-        id_words = [w for w in cluster_sorted if w not in name_words]
-        if not id_words:
-            # fallback: attempt to separate by digits content
-            id_words = [w for w in cluster_sorted if any(ch.isdigit() for ch in w.text)]
-            name_words = [w for w in cluster_sorted if w not in id_words]
+        # All words belong to exactly one row by these boundaries.
+        band = [w for w in region if (y_low <= w.y_center < y_high)]
+        band.sort(key=lambda w: (w.x_left, w.y_center))
 
-        def bbox_union(ws: list[_Word]) -> tuple[float, float, float, float] | None:
-            if not ws:
-                return None
-            x0 = min(w.bbox[0] for w in ws)
-            y0 = min(w.bbox[1] for w in ws)
-            x1 = max(w.bbox[2] for w in ws)
-            y1 = max(w.bbox[3] for w in ws)
-            # pad slightly
-            pad_x = 0.01 * ocr_w
-            pad_y = 0.008 * ocr_h
-            return (x0 - pad_x, y0 - pad_y, x1 + pad_x, y1 + pad_y)
+        # For ID label + ID tokens, allow a small y slack so labels/tokens near row borders
+        # are still captured by the intended row.
+        id_band = [
+            w
+            for w in region
+            if ((y_low - 0.12) <= w.y_center < (y_high + 0.12))
+        ]
+        id_band.sort(key=lambda w: (w.x_left, w.y_center))
 
-        name_bbox = bbox_union(name_words) or bbox_union(cluster_sorted)
-        id_bbox = bbox_union(id_words) or bbox_union(cluster_sorted)
-        if not name_bbox or not id_bbox:
-            continue
+        # Find SA ID label for this row (content contains ID/SAID; roughly right side).
+        label: _AzureWord | None = None
+        for w in id_band:
+            if w.x_left <= 9.5:
+                continue
+            tt = w.text.strip().upper().replace(" ", "")
+            if "SAID" in tt or "ID" in tt:
+                label = w
+                break
+            if tt in {"ID", "SAID"}:
+                label = w
+                break
 
-        name_px = _scale_bbox(name_bbox, ocr_w, ocr_h, img_w, img_h)
-        id_px = _scale_bbox(id_bbox, ocr_w, ocr_h, img_w, img_h)
+        # Extract name (handwritten zone) between NAME anchor and SA ID label.
+        name_x_min = max(9.2, anchor.x_right)
+        name_x_max = 11.5
+        if label is not None:
+            name_x_max = min(name_x_max, label.x_left)
 
-        name_img = page_img.crop(name_px)
-        id_img = page_img.crop(id_px)
+        name_tokens: list[str] = []
+        for w in band:
+            x = w.x_left
+            if not (name_x_min <= x <= name_x_max):
+                continue
+            t = w.text.strip()
+            if not t:
+                continue
+            tu = t.upper().replace(" ", "")
+            if tu in exclude_name:
+                continue
+            if any(ch.isdigit() for ch in t):
+                continue
+            name_tokens.append(t)
+        ocr_name_raw = " ".join(name_tokens).strip()
 
-        token = uuid.uuid4().hex[:10]
-        name_rel = Path("crops") / f"{job_id}_row{row_index}_name_{token}.png"
-        id_rel = Path("crops") / f"{job_id}_row{row_index}_id_{token}.png"
-        name_abs = Path(settings.MEDIA_ROOT) / name_rel
-        id_abs = Path(settings.MEDIA_ROOT) / id_rel
+        ocr_id_raw = ""
+        ocr_id_clean = ""
 
-        name_img.save(name_abs)
-        id_img.save(id_abs)
+        if label is not None:
+            # Only consider ID tokens to the RIGHT of label OR immediately below (<= 0.3in) and right of it.
+            pool = [
+                w
+                for w in id_band
+                if w.idx not in used_id_word_idxs
+                and any(ch.isdigit() for ch in w.text)
+                and (
+                    (w.x_left > label.x_left)
+                    or ((0.0 < (w.y_center - label.y_center) <= 0.35) and (w.x_left > label.x_left))
+                )
+            ]
+            pool.sort(key=lambda w: (w.x_left, abs(w.y_center - label.y_center)))
 
-        ocr_name_raw = " ".join(w.text for w in name_words).strip()
-        ocr_id_raw = " ".join(w.text for w in id_words).strip()
+            # Build candidates allowing split IDs like "100 740" -> "100740"
+            # by concatenating adjacent digit tokens (close in x and y).
+            best: tuple[set[int], str, float, float] | None = None
+            for i, w in enumerate(pool):
+                if w.idx in used_id_word_idxs:
+                    continue
+                digits = _digits_only(w.text)
+                if not digits:
+                    continue
+                used = {w.idx}
+                x0 = w.x_left
+                yc = w.y_center
+
+                # try extend with following tokens
+                for nxt in pool[i + 1 : i + 6]:
+                    if nxt.idx in used_id_word_idxs:
+                        continue
+                    if abs(nxt.y_center - yc) > 0.15:
+                        continue
+                    if (nxt.x_left - x0) > 1.2:
+                        break
+                    d2 = _digits_only(nxt.text)
+                    if not d2:
+                        continue
+                    digits += d2
+                    used.add(nxt.idx)
+                    if len(digits) >= 6:
+                        break
+
+                if len(digits) == 6:
+                    best = (used, digits, x0, yc)
+                    break
+
+                # also accept a single-token 6-digit match
+                single = _clean_id_digits(w.text)
+                if single:
+                    best = ({w.idx}, single, x0, yc)
+                    break
+
+            if best:
+                used_idxs, digits6, *_ = best
+                used_id_word_idxs.update(used_idxs)
+                ocr_id_clean = digits6
+                ocr_id_raw = digits6
 
         out.append(
             {
+                "row_index": idx,
                 "ocr_name_raw": ocr_name_raw,
                 "ocr_id_raw": ocr_id_raw,
-                "name_crop_path": str(name_rel).replace("\\", "/"),
-                "id_crop_path": str(id_rel).replace("\\", "/"),
+                "ocr_id_clean": ocr_id_clean,
             }
         )
 
