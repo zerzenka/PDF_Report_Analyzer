@@ -1,92 +1,130 @@
-# PDF Report Analyzer — project context for AI assistants
+# HP Briefing Analyzer — project context for AI assistants
 
 ## What this project is
 
-An internal HR tool that processes **scanned PDF reports** (employee performance/health
-reports) and extracts structured data from them. The pilot was built with FastAPI and
-runs as a command-line batch processor. This file describes the **full-scale rewrite**
-being built with Django, React, and PostgreSQL.
+An internal tool for **Sohar Aluminium** that processes scanned **Human Performance
+Pre-Job Briefing** forms. Each form is filled out by a team leader before a job,
+listing 1–N team members with their handwritten names and SA ID numbers. The app
+extracts those names/IDs, matches them to the employee/contractor database, and
+produces monthly reports showing how many HP briefings each person participated in,
+per department.
 
 The original pilot repo: https://github.com/zerzenka/PDF_Report_Analyzer
 
 ---
 
-## Pilot app — what exists today
+## The document — what it looks like
 
-### Tech stack (pilot)
-- **Framework:** FastAPI + Uvicorn
-- **PDF extraction:** pdfplumber, pdfminer.six, pdf2image, pypdfium2
-- **OCR:** pytesseract (slow — ~2 min per PDF, CPU only)
-- **ML attempt:** easyocr, torch, torchvision, torchaudio (abandoned — GPU incompatible)
-- **Data matching:** rapidfuzz (fuzzy match extracted names to employees)
-- **Employee data:** loaded from `employees.xlsx` (openpyxl/pandas)
-- **Output:** `batch_results.xlsx` written to disk
-- **Entry point:** `run_export_batch.py` calls `app/services/export_batch.py`
-
-### Folder structure (pilot)
-```
-PDF_Report_Analyzer/
-├── app/
-│   └── services/
-│       └── export_batch.py       # Core logic — reusable in Django
-├── batches/
-│   └── test_batch_1/             # Sample input PDFs
-├── employees.xlsx                # Employee master list
-├── batch_results.xlsx            # Output — to be replaced by DB
-├── run_export_batch.py           # CLI entry point
-├── requirements.txt              # FastAPI + PDF libs
-├── requirements-full.txt         # Same + extras
-└── requirements-ml.txt           # torch, easyocr, pymupdf, rapidfuzz, pandas, openpyxl
-```
-
-### What the pilot does (step by step)
-1. Reads a folder of incoming scanned PDF files
-2. Converts each PDF page to an image (pdf2image / pypdfium2)
-3. Runs OCR on each page image (pytesseract)
-4. Extracts structured fields from the OCR text (employee name, scores, period, etc.)
-5. Fuzzy-matches the extracted employee name to `employees.xlsx` (rapidfuzz)
-6. Writes all results to `batch_results.xlsx`
-
-### Known problems with the pilot
-- **~2 minutes per PDF** — pytesseract is single-threaded and CPU-only
-- **No GPU support** — RTX 5070 Ti (Blackwell, sm_120) is incompatible with stable
-  PyTorch as of May 2026. Stable PyTorch only supports up to sm_90 (Hopper).
-  easyocr was tried and abandoned for this reason.
-- **No UI** — runs only from the command line
-- **No database** — results live in Excel files on a shared network drive
-- **No auth** — no user management
-- **Hardcoded paths** — `SHARED_ROOT = r"I:\60 - Services\30 - BI\010 - Shared\HP_app"`
+- Form: "Human Performance Pre-Job Briefing" (Sohar Aluminium)
+- Each PDF is a scanned paper form — handwritten content
+- The team member table is in the bottom-right of the form
+- Each row has: handwritten NAME + handwritten SA ID + signature
+- There are typically 1–7 rows but can vary — no fixed number
+- Sometimes team members write names OUTSIDE the table (below it)
+  → reviewer must be able to add extra rows manually during review
+- Date field exists on the form but is often unclear/unreadable
+  → month is determined by the FOLDER the PDF is uploaded into, not the document
 
 ---
 
-## Full-scale app — target architecture
+## The document — SA ID format rules
 
-### Tech stack
+SA IDs are always 6 digits. Two types:
+- **Employees**: start with 1 → 100xxx, 101xxx, 102xxx (growing over time)
+- **Contractors**: start with 9 → 9xxxxx
+
+Prefix rules:
+- Sometimes written as "SA100857" — strip "SA" prefix before matching
+- Sometimes written as "SA929400" (contractor) — strip "SA", becomes "929400"
+- The number in the database is always 6 digits, no prefix
+- Use first digit after stripping to decide which DB to search:
+  - Starts with 1 → Employee database
+  - Starts with 9 → Contractor database
+
+---
+
+## The full workflow (step by step)
+
+1. **Focal point** (department data entry person) logs in
+2. Selects or creates a **month batch** (e.g. "05-2026" for May 2026)
+3. **Uploads one or more PDFs** into that month batch
+4. For each PDF, a **Celery task** runs:
+   a. Azure Document Intelligence OCR reads the full page
+   b. The team member table is detected and each row is cropped:
+      - One image crop for the NAME cell
+      - One image crop for the ID cell
+   c. OCR text is extracted from each crop separately
+   d. SA prefix is stripped from ID; first digit used to select Employee or Contractor DB
+   e. Each row is scored: `total = (name_score x 0.65) + (id_score x 0.35)`
+   f. High confidence (>= 85%) → auto_resolved
+   g. Low confidence (< 85%) → needs_review
+5. Document status:
+   - All rows auto-resolved → still goes to needs_review (reviewer always confirms)
+   - Any rows need review → needs_review
+   - OCR failed → error
+6. **Reviewer opens the document** in the detail panel:
+   - Left side: PDF viewer (full document visible)
+   - Right side: each detected row shown with:
+     - Name crop image
+     - ID crop image
+     - OCR text extracted
+     - Top 5 candidate matches with scores
+     - Final Name field (editable)
+     - Final ID field (searchable — type digits to filter dropdown)
+     - Dropdown shows ID + Name from Employee/Contractor table
+   - Reviewer can add extra rows for names written outside the table
+   - Even auto-resolved rows can be changed by the reviewer
+7. Reviewer clicks Resolve on each row, then Submit on the document
+8. Document status → resolved
+9. For each resolved row → one **HPRecord** is created in the database
+   - Links employee/contractor to this document and month
+   - If same person appears on multiple documents in same month → count increases
+10. **Document can be deleted** even after resolved (by focal point or admin)
+11. **Monthly reports** are generated per department:
+    - Total HP briefings done that month
+    - Number of participations per person
+    - Breakdown by employee vs contractor
+
+---
+
+## Users and access control
+
+### Roles
+- **Admin**: sees all departments, manages users, manages employee/contractor list,
+  can delete any document, can export any report
+- **Focal Point** (Reviewer): sees ONLY their own department's documents and reports,
+  uploads PDFs, does manual review, can delete their own department's documents
+
+### Department assignment
+- Each user's department is predefined by admin when the account is created
+- Users cannot change their own department
+- Department is stored on the User profile, not chosen at login
+- JWT token includes: role, department_id, department_name
+
+### Data isolation
+- Focal point queries are always filtered by department
+- Enforced at API level (DRF permission classes + queryset filtering), not just UI
+
+---
+
+## Tech stack
+
 | Layer | Technology |
 |---|---|
-| Frontend | React (Vite), react-router-dom, axios |
+| Frontend | React (Vite), react-router-dom, axios, react-pdf |
 | Backend | Django 5.x + Django REST Framework |
 | Database | PostgreSQL |
 | Task queue | Celery + Redis |
 | Real-time | Django Channels (WebSocket for job progress) |
 | OCR | Azure Document Intelligence (replaces pytesseract) |
 | Auth | JWT via djangorestframework-simplejwt |
-| File storage | Django MEDIA_ROOT (local for dev, S3-compatible for prod) |
+| File storage | Django MEDIA_ROOT (local for dev) |
 | Dev environment | Cursor (VS Code-based), Windows 11 |
-| GPU | NVIDIA RTX 5070 Ti 12GB — NOT usable yet with PyTorch stable |
-
-### Why Azure Document Intelligence for OCR
-- pytesseract: CPU only, ~2 min/PDF, no GPU support
-- easyocr/doctr/surya: all depend on PyTorch, which doesn't support sm_120 (RTX 5070 Ti)
-  in stable builds as of May 2026
-- Azure Document Intelligence: cloud API, ~2–5 sec/PDF, no GPU required, returns
-  structured JSON with field positions, high accuracy on scanned documents
-- The OCR layer is intentionally abstracted in a service class so it can be swapped
-  to a local GPU model once PyTorch stable supports sm_120
+| GPU | NVIDIA RTX 5070 Ti 12GB — NOT usable with PyTorch stable (sm_120) |
 
 ---
 
-## Django project structure (target)
+## Django project structure
 
 ```
 backend/
@@ -94,24 +132,30 @@ backend/
 │   ├── settings.py
 │   ├── urls.py
 │   ├── celery.py
-│   └── asgi.py                   # Django Channels entry point
+│   └── asgi.py
 ├── apps/
-│   ├── documents/                # Core app
-│   │   ├── models.py             # AnalysisJob, ExtractedField
+│   ├── authentication/
+│   │   ├── serializers.py        # CustomTokenObtainPairSerializer (role + dept in token)
+│   │   └── urls.py
+│   ├── documents/
+│   │   ├── models.py             # MonthBatch, AnalysisJob, DocumentRow, HPRecord
 │   │   ├── serializers.py
-│   │   ├── views.py              # DRF API views
+│   │   ├── views.py
 │   │   ├── urls.py
-│   │   ├── tasks.py              # Celery tasks
-│   │   ├── consumers.py          # WebSocket consumers
+│   │   ├── tasks.py              # process_pdf_task (Celery)
+│   │   ├── consumers.py          # WebSocket job progress
 │   │   └── services/
 │   │       ├── ocr_service.py    # Azure Document Intelligence wrapper
-│   │       └── extraction.py    # Field extraction logic (ported from pilot)
-│   ├── employees/                # Employee management
-│   │   ├── models.py             # Employee (replaces employees.xlsx)
+│   │       ├── table_detector.py # Detect and crop team member table rows
+│   │       └── matcher.py        # ID stripping + fuzzy matching logic
+│   ├── employees/
+│   │   ├── models.py             # Employee (employees + contractors in one table)
 │   │   ├── serializers.py
-│   │   └── views.py
-│   └── reports/                  # Report output
-│       ├── models.py             # Report (replaces batch_results.xlsx)
+│   │   ├── views.py
+│   │   └── management/commands/
+│   │       └── import_employees.py  # Seeds from employees.xlsx (dev only)
+│   └── reports/
+│       ├── models.py
 │       ├── serializers.py
 │       └── views.py
 └── manage.py
@@ -119,18 +163,19 @@ backend/
 frontend/
 ├── src/
 │   ├── components/
-│   │   ├── DocumentList.jsx      # Left panel — list with status badges
-│   │   ├── DetailPanel.jsx       # Right panel — extracted data view
-│   │   ├── UploadButton.jsx
-│   │   └── StatusBadge.jsx
+│   │   ├── DocumentList.jsx      # Left panel — month groups + document items
+│   │   ├── ReviewPanel.jsx       # Right panel — PDF viewer + row review UI
+│   │   ├── RowReviewCard.jsx     # One row: name crop, ID crop, search dropdown
+│   │   ├── StatusBadge.jsx
+│   │   └── MonthSelector.jsx
 │   ├── pages/
 │   │   ├── DocumentsPage.jsx     # Main Outlook-style layout
-│   │   ├── EmployeesPage.jsx
-│   │   └── ReportsPage.jsx
+│   │   ├── ReportsPage.jsx       # Monthly reports
+│   │   └── EmployeesPage.jsx     # Admin only
 │   ├── hooks/
-│   │   └── useJobStatus.js       # WebSocket hook for live progress
+│   │   └── useJobStatus.js       # WebSocket hook
 │   ├── api/
-│   │   └── client.js             # axios instance with JWT interceptor
+│   │   └── client.js             # axios + JWT interceptor
 │   └── App.jsx
 └── vite.config.js
 ```
@@ -139,113 +184,272 @@ frontend/
 
 ## Database models
 
-### AnalysisJob
-Tracks each uploaded PDF through its lifecycle.
+### Department
+```python
+class Department(models.Model):
+    name = models.CharField(max_length=100, unique=True)  # e.g. "Reduction"
+    code = models.CharField(max_length=20, unique=True)   # e.g. "RED"
+```
 
+### UserProfile (extends Django User)
+```python
+class UserProfile(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    department = models.ForeignKey(Department, null=True, on_delete=models.SET_NULL)
+    # role derived: superuser or Admin group = admin, otherwise = focal_point
+```
+
+### Employee
+```python
+class Employee(models.Model):
+    TYPE_CHOICES = [('employee', 'Employee'), ('contractor', 'Contractor')]
+    employee_id = models.CharField(max_length=10, unique=True)  # 6-digit, no prefix
+    full_name = models.CharField(max_length=255)
+    department = models.ForeignKey(Department, null=True, on_delete=models.SET_NULL)
+    email = models.EmailField(blank=True)
+    type = models.CharField(max_length=20, choices=TYPE_CHOICES)
+    is_active = models.BooleanField(default=True)
+    last_synced = models.DateTimeField(null=True)
+```
+
+### MonthBatch
+Groups documents by month. Month comes from upload selection, not document content.
+```python
+class MonthBatch(models.Model):
+    department = models.ForeignKey(Department, on_delete=models.CASCADE)
+    month_label = models.CharField(max_length=7)   # e.g. "05-2026"
+    month_date = models.DateField()                 # first day: 2026-05-01
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('department', 'month_label')
+```
+
+### AnalysisJob
+One PDF document.
 ```python
 class AnalysisJob(models.Model):
     STATUS_CHOICES = [
         ('queued', 'Queued'),
         ('processing', 'Processing'),
-        ('done', 'Done'),
+        ('needs_review', 'Needs Review'),
+        ('resolved', 'Resolved'),
         ('error', 'Error'),
     ]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    batch = models.ForeignKey(MonthBatch, on_delete=models.CASCADE,
+                               related_name='documents')
     file = models.FileField(upload_to='uploads/')
     original_filename = models.CharField(max_length=255)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='queued')
-    employee = models.ForeignKey('employees.Employee', null=True, blank=True,
-                                  on_delete=models.SET_NULL)
     page_count = models.IntegerField(null=True)
     error_message = models.TextField(blank=True)
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    resolved_at = models.DateTimeField(null=True)
+    deleted = models.BooleanField(default=False)   # soft delete
 ```
 
-### Employee
-Replaces `employees.xlsx`. Import the existing Excel on first run.
-
+### DocumentRow
+One person detected in a PDF.
 ```python
-class Employee(models.Model):
-    employee_id = models.CharField(max_length=50, unique=True)  # e.g. EMP-0412
-    full_name = models.CharField(max_length=255)
-    department = models.CharField(max_length=100)
-    email = models.EmailField(blank=True)
-    is_active = models.BooleanField(default=True)
+class DocumentRow(models.Model):
+    STATUS_CHOICES = [
+        ('auto_resolved', 'Auto Resolved'),
+        ('needs_review', 'Needs Review'),
+        ('resolved', 'Resolved'),
+    ]
+    job = models.ForeignKey(AnalysisJob, on_delete=models.CASCADE, related_name='rows')
+    row_index = models.IntegerField()
+
+    # OCR raw output
+    ocr_name_raw = models.CharField(max_length=255, blank=True)
+    ocr_id_raw = models.CharField(max_length=50, blank=True)
+    ocr_id_clean = models.CharField(max_length=10, blank=True)  # stripped of SA prefix
+
+    # Crop images
+    name_crop = models.ImageField(upload_to='crops/', null=True)
+    id_crop = models.ImageField(upload_to='crops/', null=True)
+
+    # Matching
+    top_candidates = models.JSONField(default=list)  # top 5 with scores
+    confidence = models.FloatField(default=0.0)
+    match_method = models.CharField(max_length=50, blank=True)
+
+    # Resolution
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='needs_review')
+    resolved_employee = models.ForeignKey('employees.Employee', null=True, blank=True,
+                                          on_delete=models.SET_NULL)
+    resolved_manually = models.BooleanField(default=False)
+    added_manually = models.BooleanField(default=False)  # added outside table
+    resolved_at = models.DateTimeField(null=True)
 ```
 
-### Report / ExtractedField
-Replaces `batch_results.xlsx`. Stores what was pulled out of each PDF.
-
+### HPRecord
+Created when a DocumentRow is resolved. Source of truth for monthly counts.
 ```python
-class Report(models.Model):
-    job = models.OneToOneField(AnalysisJob, on_delete=models.CASCADE)
-    period = models.CharField(max_length=50)          # e.g. "Q1 2024"
-    raw_ocr_text = models.TextField()                 # full OCR dump for debugging
+class HPRecord(models.Model):
+    employee = models.ForeignKey('employees.Employee', on_delete=models.CASCADE,
+                                  related_name='hp_records')
+    document_row = models.OneToOneField(DocumentRow, on_delete=models.CASCADE)
+    job = models.ForeignKey(AnalysisJob, on_delete=models.CASCADE)
+    department = models.ForeignKey('employees.Department', on_delete=models.CASCADE)
+    month_batch = models.ForeignKey(MonthBatch, on_delete=models.CASCADE)
+    month_date = models.DateField()
     created_at = models.DateTimeField(auto_now_add=True)
 
-class ExtractedField(models.Model):
-    report = models.ForeignKey(Report, on_delete=models.CASCADE,
-                                related_name='fields')
-    label = models.CharField(max_length=100)          # e.g. "Attendance"
-    value = models.CharField(max_length=255)          # e.g. "96%"
-    confidence = models.FloatField(null=True)         # from Azure API
+    class Meta:
+        # Same person on 3 documents in one month = 3 HPRecords = count of 3 (correct)
+        indexes = [
+            models.Index(fields=['employee', 'month_date']),
+            models.Index(fields=['department', 'month_date']),
+        ]
 ```
 
 ---
 
-## API endpoints (Django REST Framework)
-
-```
-POST   /api/documents/upload/          Upload a PDF → creates AnalysisJob, queues Celery task
-GET    /api/documents/                 List all jobs (with status, employee, date)
-GET    /api/documents/<uuid>/          Job detail + extracted fields
-GET    /api/documents/<uuid>/export/   Download results as Excel
-POST   /api/documents/<uuid>/rerun/    Re-queue a failed job
-
-GET    /api/employees/                 List employees
-POST   /api/employees/import/          Import from Excel
-
-GET    /api/reports/                   List all completed reports
-
-POST   /api/auth/token/                Get JWT token
-POST   /api/auth/token/refresh/        Refresh JWT token
-
-WS     /ws/jobs/<uuid>/               WebSocket — real-time job progress updates
-```
-
----
-
-## Celery task flow
-
-When a PDF is uploaded:
-1. `POST /api/documents/upload/` → creates `AnalysisJob(status='queued')`, saves file
-2. View calls `process_pdf_task.delay(job_id)`
-3. Celery worker picks up task:
-   - Sets `status='processing'`, sends WebSocket update
-   - Calls `ocr_service.analyze(file_path)` → Azure Document Intelligence API
-   - Runs `extraction.extract_fields(ocr_result)` → structured dict
-   - Fuzzy-matches employee name with rapidfuzz against Employee table
-   - Creates `Report` and `ExtractedField` records
-   - Sets `status='done'`, sends WebSocket update
-4. Frontend receives WebSocket update, refreshes detail panel
-
----
-
-## OCR service — abstraction layer
-
-The OCR backend is behind an interface so it can be swapped later:
+## Matching logic (matcher.py)
 
 ```python
-# app/services/ocr_service.py
+def clean_id(raw_id: str) -> str:
+    """Strip SA prefix, return 6-digit string or empty."""
+    cleaned = raw_id.strip().upper().lstrip('SA').strip()
+    return cleaned if cleaned.isdigit() and len(cleaned) == 6 else ''
 
+def get_employee_type(clean_id: str) -> str:
+    """Determine employee or contractor from first digit."""
+    if not clean_id:
+        return 'unknown'
+    return 'employee' if clean_id.startswith('1') else 'contractor'
+
+def match_row(ocr_name: str, ocr_id_raw: str) -> dict:
+    """
+    Score formula:
+      name_score  = rapidfuzz.fuzz.token_sort_ratio(ocr_name, candidate_name)
+      id_score    = rapidfuzz.fuzz.ratio(clean_id, candidate_id)
+      total_score = (name_score * 0.65) + (id_score * 0.35)
+
+    Resolution:
+      total_score >= 85  → auto_resolved
+      total_score < 85   → ambiguous_manual_review
+      id exact match but name_score < 60 → number_only_name_mismatch (flag for review)
+
+    Returns top 5 candidates + recommended resolution.
+    """
+```
+
+---
+
+## API endpoints
+
+```
+# Auth
+POST   /api/auth/token/                       Get JWT (role + department in response)
+POST   /api/auth/token/refresh/
+
+# Month batches
+GET    /api/batches/                          List batches for user's department
+POST   /api/batches/                          Create new batch {month_label: "05-2026"}
+GET    /api/batches/<id>/                     Batch detail + document list
+
+# Documents
+POST   /api/documents/upload/                 Upload PDFs → AnalysisJob per file
+GET    /api/documents/                        List (filtered by dept automatically)
+GET    /api/documents/<uuid>/                 Detail + all rows
+DELETE /api/documents/<uuid>/                 Soft delete (focal point or admin)
+POST   /api/documents/<uuid>/rerun/           Re-queue failed document
+POST   /api/documents/<uuid>/submit/          Mark resolved, create HPRecords
+
+# Document rows (review)
+GET    /api/documents/<uuid>/rows/            List all rows
+PATCH  /api/documents/<uuid>/rows/<id>/resolve/  Resolve a row
+POST   /api/documents/<uuid>/rows/add/        Add manual row (name outside table)
+DELETE /api/documents/<uuid>/rows/<id>/       Delete manually added row
+
+# Employee search (for review dropdown)
+GET    /api/employees/search/?q=digits        Search by ID digits
+
+# Employees (admin only)
+GET    /api/employees/
+POST   /api/employees/import/                 From Excel (dev only)
+POST   /api/employees/sync/                   Trigger sync from source DBs
+
+# Reports
+GET    /api/reports/monthly/                  Monthly report for dept + month
+GET    /api/reports/monthly/export/           Download as Excel
+
+# WebSocket
+WS     /ws/jobs/<uuid>/                       Real-time processing progress
+```
+
+---
+
+## UI design — Outlook-style layout
+
+```
+[ icon sidebar ] [ document list ] [ detail panel                          ]
+     36px             240px        [ PDF viewer (left) | Review (right)   ]
+```
+
+### Document list
+- Grouped by MonthBatch ("May 2026", "April 2026")
+- Each item: filename, rows resolved/total, status badge
+- Badges: Queued (gray), Processing (amber), Needs Review (orange), Resolved (green), Error (red)
+
+### Detail panel — Needs Review
+- Left half: react-pdf PDF viewer showing full document
+- Right half: review panel with one RowReviewCard per detected row:
+  - Name crop image + ID crop image
+  - OCR raw text shown
+  - Editable Name field
+  - ID search field — type digits to filter dropdown
+  - Dropdown: "100299 — Mohammed Al Washahi"
+  - Confidence badge (green/amber/red)
+  - [Resolve] button per row
+- [+ Add row] button for names outside the table
+- [Submit document] button — only enabled when all rows resolved
+
+### Detail panel — Resolved
+- Summary of all resolved rows (name + ID + type)
+- [Delete document] button with confirmation dialog
+- [Re-open for editing] button
+
+### Match confidence display
+- >= 85% → green — auto-resolved
+- 70–84% → amber — "Low confidence — please verify"
+- < 70% → red — "Could not auto-match"
+- All rows have an edit button regardless of confidence
+
+---
+
+## Monthly report structure
+
+```
+May 2026 — Reduction Department
+Total HP Briefings:   23 documents
+Total participations: 147
+
+By person:
+  Ahmed Al-Farsi      (EMP 100412)   12 participations
+  Sara Al-Balushi     (EMP 100198)    9 participations
+  Khalid Al-Sinani    (CON 101569)    6 participations
+
+[Download Excel]
+```
+
+Same person on multiple documents in same month = multiple HPRecords = count > 1.
+This is correct — each briefing participation is counted separately.
+
+---
+
+## OCR service abstraction
+
+```python
 class OCRService:
-    """Swap the backend here when PyTorch sm_120 support lands."""
-
-    def analyze(self, file_path: str) -> dict:
+    def analyze_page(self, file_path: str) -> dict:
         return self._azure_analyze(file_path)
-        # Future: return self._local_gpu_analyze(file_path)
 
     def _azure_analyze(self, file_path: str) -> dict:
         from azure.ai.documentintelligence import DocumentIntelligenceClient
@@ -259,196 +463,130 @@ class OCRService:
         return poller.result().as_dict()
 
     def _local_gpu_analyze(self, file_path: str) -> dict:
-        # TODO: implement with surya or doctr once PyTorch supports sm_120 (RTX 5070 Ti)
-        # RTX 5070 Ti = Blackwell architecture = sm_120
-        # PyTorch stable supports only up to sm_90 as of May 2026
+        # TODO: implement once PyTorch stable supports sm_120 (RTX 5070 Ti / Blackwell)
         # Monitor: https://github.com/pytorch/pytorch/issues/164342
-        raise NotImplementedError("Local GPU OCR not yet available for sm_120")
+        raise NotImplementedError
 ```
 
 ---
 
-## UI design — Outlook-style layout
+## OCR accuracy notes
 
-The app uses a three-column Outlook-style layout:
+- Documents have handwritten names and IDs (pen on paper, scanned)
+- pytesseract on handwriting: very poor (30–50% usable matches)
+- Azure Document Intelligence on handwriting: significantly better (70–85%)
+- Handwriting will never be 100% — manual review UI is not optional, it is the core feature
+- Use rapidfuzz token_sort_ratio (not simple ratio) — better for Arabic names
+  where word order varies ("Ahmed Al Farsi" vs "Al Farsi Ahmed")
 
-```
-[ icon sidebar ] [ document list ] [ detail panel ]
-     36px             240px            flex: 1
-```
+---
 
-- Icon sidebar: Documents, Employees, Reports, Settings icons
-- Document list: scrollable list of `AnalysisJob` items with name, employee,
-  date, and status badge (Done / Processing / Queued / Error)
-- Detail panel: changes based on selected document status:
-  - `done` → extracted fields grid + data table + Export Excel / Re-run buttons
-  - `processing` → progress bar + "Page X of Y" message
-  - `queued` → waiting state
-  - `error` → error message + Re-run button
+## Employee data sources
 
-Status badge colours follow semantic conventions:
-- Done → green (`success`)
-- Processing → amber (`warning`)
-- Queued → gray
-- Error → red (`danger`)
+Two internal custom SQL databases (direct connection, read-only):
+- Employee DB: full-time employees (IDs start with 1)
+- Contractor DB: contractors (IDs start with 9)
+
+Weekly sync via Celery Beat every Monday.
+During development: seed from employees.xlsx using management command.
+In production: fill in .env DB credentials — zero code changes.
 
 ---
 
 ## Key decisions log
 
-| Decision | Choice | Reason |
-|---|---|---|
-| OCR backend | Azure Document Intelligence | RTX 5070 Ti (sm_120) incompatible with PyTorch stable; cloud API is faster and more accurate than pytesseract |
-| Task queue | Celery + Redis | Async processing so UI stays responsive during 5–30s OCR |
-| Real-time updates | Django Channels (WebSocket) | Job progress visible live without polling |
-| Employee data | Django model (DB) | Replaces brittle employees.xlsx on network share |
-| Results storage | PostgreSQL (ExtractedField) | Replaces batch_results.xlsx, enables filtering/reporting |
-| Auth | JWT (simplejwt) | Stateless, works well with React SPA |
-| Frontend scaffold | Vite + React | Faster dev server than CRA |
-| Editor | Cursor (VS Code-based) | AI-assisted coding; use `cursor .` from inside WSL if GPU libs needed |
-
----
-
-## OCR accuracy — why Azure beats pytesseract for this project
-
-### The problem with pytesseract
-pytesseract is a general-purpose OCR engine designed for clean, typed text. The HR
-reports in this project are scanned structured forms, which pytesseract handles poorly:
-- Names in table cells or form fields get garbled (e.g. "Ahmed Al-Farsi" → "Ahned A1-Farsi")
-- Numbers are misread — `1` confused with `l`, `0` with `O`, decimals dropped
-- Table structure is ignored — values get separated from their labels
-- Typical accuracy on this document type: ~85–90%
-
-### What Azure Document Intelligence does differently
-- Understands document layout — knows a value belongs to the label next to it
-- Trained on millions of structured HR/business forms
-- Returns named fields with confidence scores, not just raw text
-- Handles Arabic names and mixed-script documents reliably
-- Typical accuracy on structured scanned forms: ~97–99%
-- Especially strong on: names, numeric scores, percentages, dates, table data
-
-### rapidfuzz still matters
-Even with near-perfect OCR, keep the rapidfuzz employee name matching from the pilot.
-Azure may return "Ahmed Al-Farsi" correctly while the DB has "Ahmed Alfarsi" (no hyphen)
-or a different romanization. Fuzzy matching bridges that gap. With better OCR input,
-rapidfuzz confidence scores will be much higher, reducing "could not match" errors
-significantly.
-
-### Azure subscription handover — zero extra development
-The Azure Document Intelligence API is identical regardless of which Azure account pays
-for it. When the company takes over billing:
-- Zero code changes required
-- Only change: swap `AZURE_DI_ENDPOINT` and `AZURE_DI_KEY` in the `.env` file
-- Credentials must NEVER be hardcoded — always read from environment variables
-- `.env` must be in `.gitignore` — credentials should never appear in git history
-- Free tier: 500 pages/month at no cost — may cover entire development period
+| Decision | Reason |
+|---|---|
+| Month from upload selection, not document | Date field on form is often handwritten and unclear |
+| Soft delete for documents | Resolved documents may need deletion but HPRecords should remain |
+| Separate DocumentRow model | Each person resolved and counted independently |
+| HPRecord per resolved row | Same person on 3 docs = 3 HPRecords = count of 3 (correct) |
+| Focal point sees only own dept | Data isolation — HR data is sensitive |
+| Department predefined by admin | Users cannot self-assign |
+| Always go to needs_review | Even high-confidence matches need human confirmation for HR data |
+| Edit button on all rows | Reviewer must always be able to override matching |
+| Delete allowed after resolved | Operational requirement — mistakes happen |
+| Azure OCR | pytesseract: 2min/PDF, poor handwriting. Azure: 5sec, much better |
+| ID first digit determines DB | Reliable rule: 1xxxxx = employee, 9xxxxx = contractor |
 
 ---
 
 ## Environment variables (.env)
 
 ```env
-# Django
-DJANGO_SECRET_KEY=
 DJANGO_DEBUG=True
-DATABASE_URL=postgresql://user:pass@localhost:5432/pdf_analyzer
+DATABASE_URL=sqlite:///db.sqlite3
+CELERY_TASK_ALWAYS_EAGER=True
 
 # Azure Document Intelligence
-# To hand over to company: only these two values need to change — zero code changes
 AZURE_DI_ENDPOINT=https://<your-resource>.cognitiveservices.azure.com/
 AZURE_DI_KEY=
 
-# Celery / Redis
+# Redis / Celery (disable ALWAYS_EAGER and fill these for production)
 CELERY_BROKER_URL=redis://localhost:6379/0
 CELERY_RESULT_BACKEND=redis://localhost:6379/0
 
 # JWT
 JWT_ACCESS_TOKEN_LIFETIME_MINUTES=60
 JWT_REFRESH_TOKEN_LIFETIME_DAYS=7
+
+# Source databases (read-only, provided by IT — leave blank during dev)
+EMPLOYEE_DB_NAME=
+EMPLOYEE_DB_USER=
+EMPLOYEE_DB_PASSWORD=
+EMPLOYEE_DB_HOST=
+CONTRACTOR_DB_NAME=
+CONTRACTOR_DB_USER=
+CONTRACTOR_DB_PASSWORD=
+CONTRACTOR_DB_HOST=
 ```
 
 ---
 
-## GPU / PyTorch status (important)
+## GPU / PyTorch status
 
-- GPU: NVIDIA GeForce RTX 5070 Ti, 12GB VRAM, Blackwell architecture, `sm_120`
-- PyTorch stable (as of May 2026): supports only up to `sm_90` — RTX 5070 Ti **cannot
-  be used** with stable PyTorch builds on Windows
-- Workaround options:
-  1. PyTorch nightly + CUDA 12.8/12.9 inside **WSL2** (works, but unstable)
-  2. Use cloud OCR (Azure/Google) — chosen approach for this project
-- Track PyTorch sm_120 support: https://github.com/pytorch/pytorch/issues/164342
-- When sm_120 lands in stable PyTorch, swap `OCRService._azure_analyze` for
-  `_local_gpu_analyze` using surya or doctr
+- GPU: NVIDIA RTX 5070 Ti, 12GB, Blackwell (sm_120)
+- PyTorch stable (May 2026): supports only up to sm_90 — cannot use GPU
+- Using Azure cloud OCR — no GPU required
+- Track PyTorch sm_120: https://github.com/pytorch/pytorch/issues/164342
 
 ---
 
-## Pilot code to migrate / reuse
-
-| Pilot file | Migration target |
-|---|---|
-| `app/services/export_batch.py` | `backend/apps/documents/services/extraction.py` |
-| `employees.xlsx` | `Employee` model + management command to import |
-| `batch_results.xlsx` | `Report` + `ExtractedField` models |
-| `run_export_batch.py` | `process_pdf_task` Celery task |
-| pytesseract calls | `OCRService._azure_analyze()` |
-| rapidfuzz matching | Keep as-is, query `Employee.objects.all()` instead of Excel |
-
----
-
-## Running locally (target setup)
+## Running locally
 
 ```bash
-# Backend
-cd backend
-pip install -r requirements.txt
+# Terminal 1 — Django
+cd backend && pip install -r requirements.txt
 python manage.py migrate
+python manage.py import_employees
 python manage.py runserver
 
-# Celery worker (separate terminal)
+# Terminal 2 — Celery (or set CELERY_TASK_ALWAYS_EAGER=True to skip)
 celery -A config worker --loglevel=info
 
-# Redis (Docker)
+# Terminal 3 — Redis (skip if using ALWAYS_EAGER)
 docker run -p 6379:6379 redis:alpine
 
-# Frontend
-cd frontend
-npm install
-npm run dev
+# Terminal 4 — React
+cd frontend && npm install && npm run dev
 ```
 
 ---
 
-## What IS in scope
+## In scope
 
-### Batch upload
-- Multi-file dropzone in React — user selects or drops multiple PDFs at once
-- Each PDF becomes its own `AnalysisJob` record
-- All jobs fired to Celery simultaneously — processed in parallel
-- Document list shows all jobs with individual status badges
-- The pilot already did this (`build_export_package` processes a whole folder) — the
-  full app must not go backwards on this
+- Batch upload into month batches
+- PDF viewer (react-pdf) in review panel
+- Manual review UI — name/ID crops, searchable dropdown, add extra rows
+- Edit any row including auto-resolved ones
+- Soft delete of documents after resolution
+- Role-based access: Admin and Focal Point
+- Department-based data isolation
+- Monthly reports (total + per person) with Excel export
+- Weekly sync from source employee/contractor databases
 
-### PDF preview in browser
-- When a completed job is selected in the detail panel, show the original scan
-  alongside the extracted data
-- Use `react-pdf` library (renders PDF pages as canvas in browser)
-- Layout: extracted fields on the right, PDF viewer on the left (or toggled)
-- Critical for usability: lets HR reviewers spot OCR errors by comparing
-  extracted values against the original document without leaving the app
+## Not in scope yet
 
-### Role-based permissions
-- HR data is sensitive — "everyone sees everything" is not acceptable even for demo
-- Two roles minimum, implemented via Django Groups:
-  - **Admin**: manages employees, deletes jobs, sees all documents, exports
-  - **Reviewer**: uploads PDFs, views results, downloads reports — cannot manage employees
-- Enforced at API level with DRF permission classes, not just in the frontend
-- JWT token payload includes the user's role so React can show/hide UI elements
-
----
-
-## What is NOT in scope (yet)
-
-- Multi-tenant / multi-company support — one company, one instance for now
-- Deployment / CI-CD pipeline — a `docker-compose.yml` for local/demo is enough;
-  proper deployment is a post-demo concern
+- Multi-tenant / multi-company
+- CI/CD pipeline
+- Mobile layout
