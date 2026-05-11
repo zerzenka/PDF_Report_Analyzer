@@ -128,3 +128,7 @@ CELERY_RESULT_BACKEND = os.environ.get(
 )
 CELERY_TASK_ALWAYS_EAGER = True
 CELERY_TASK_EAGER_PROPAGATES = True
+
+# Azure Document Intelligence (OCR)
+AZURE_DI_ENDPOINT = os.environ.get("AZURE_DI_ENDPOINT", "").strip()
+AZURE_DI_KEY = os.environ.get("AZURE_DI_KEY", "").strip()
