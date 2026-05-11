@@ -157,11 +157,29 @@ class DocumentViewSet(
             .prefetch_related("rows", "rows__resolved_employee")
         )
         if is_admin_user(self.request.user):
-            return qs.order_by("-created_at")
-        dept = _focal_department(self.request.user)
-        if dept is None:
-            return AnalysisJob.objects.none()
-        return qs.filter(batch__department=dept).order_by("-created_at")
+            qs = qs.order_by("-created_at")
+        else:
+            dept = _focal_department(self.request.user)
+            if dept is None:
+                return AnalysisJob.objects.none()
+            qs = qs.filter(batch__department=dept).order_by("-created_at")
+
+        batch_id = self.request.query_params.get("batch")
+        if batch_id is not None and self.action == "list":
+            try:
+                bid = int(batch_id)
+            except (TypeError, ValueError):
+                return AnalysisJob.objects.none()
+            batch = MonthBatch.objects.filter(pk=bid).first()
+            if batch is None:
+                return AnalysisJob.objects.none()
+            try:
+                _assert_batch_department_access(self.request.user, batch)
+            except PermissionDenied:
+                return AnalysisJob.objects.none()
+            qs = qs.filter(batch_id=bid)
+
+        return qs
 
     def get_serializer_class(self):
         if self.action == "retrieve":
@@ -178,6 +196,21 @@ class DocumentViewSet(
         job.deleted = True
         job.save(update_fields=["deleted", "updated_at"])
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["post"], url_path="rerun")
+    def rerun(self, request, pk=None):
+        """Re-queue a failed document for OCR/processing."""
+        job = self.get_object()
+        if job.status != AnalysisJob.Status.ERROR:
+            return Response(
+                {"detail": "Only documents in error state can be re-run."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        job.status = AnalysisJob.Status.QUEUED
+        job.error_message = ""
+        job.save(update_fields=["status", "error_message", "updated_at"])
+        process_pdf_task.delay(str(job.id))
+        return Response(AnalysisJobDetailSerializer(job).data)
 
     @action(
         detail=True,

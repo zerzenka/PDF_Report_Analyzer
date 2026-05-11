@@ -116,7 +116,7 @@ class DocumentRowSerializer(serializers.ModelSerializer):
 
 class AnalysisJobListSerializer(serializers.ModelSerializer):
     filename = serializers.CharField(source="original_filename", read_only=True)
-    batch_id = serializers.IntegerField(source="batch_id", read_only=True)
+    batch_id = serializers.IntegerField(read_only=True)
     month_label = serializers.CharField(source="batch.month_label", read_only=True)
     rows_total = serializers.SerializerMethodField()
     rows_resolved = serializers.SerializerMethodField()
@@ -146,7 +146,7 @@ class AnalysisJobListSerializer(serializers.ModelSerializer):
 class AnalysisJobDetailSerializer(serializers.ModelSerializer):
     filename = serializers.CharField(source="original_filename", read_only=True)
     rows = DocumentRowSerializer(many=True, read_only=True)
-    batch_id = serializers.IntegerField(source="batch_id", read_only=True)
+    batch_id = serializers.IntegerField(read_only=True)
     month_label = serializers.CharField(source="batch.month_label", read_only=True)
     department_id = serializers.IntegerField(
         source="batch.department_id", read_only=True

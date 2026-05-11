@@ -27,6 +27,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "corsheaders",
     "rest_framework",
     "apps.authentication",
     "apps.documents",
@@ -36,6 +37,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -136,3 +138,9 @@ CELERY_TASK_EAGER_PROPAGATES = True
 # Azure Document Intelligence (OCR)
 AZURE_DI_ENDPOINT = os.environ.get("AZURE_DI_ENDPOINT", "").strip()
 AZURE_DI_KEY = os.environ.get("AZURE_DI_KEY", "").strip()
+
+# SPA (Vite dev server)
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
