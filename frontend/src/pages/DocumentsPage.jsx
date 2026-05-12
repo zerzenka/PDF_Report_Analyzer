@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Document, Page } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -661,6 +662,7 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
 }
 
 export default function DocumentsPage() {
+  const navigate = useNavigate();
   const [batches, setBatches] = useState([]);
   const [batchesError, setBatchesError] = useState("");
   const [openBatchIds, setOpenBatchIds] = useState(() => new Set());
@@ -1058,7 +1060,7 @@ export default function DocumentsPage() {
         >
           <IconDocuments />
         </button>
-        <button type="button" disabled title="Reports (coming soon)">
+        <button type="button" title="Reports" onClick={() => navigate("/reports")}>
           <IconReports />
         </button>
         <button type="button" disabled title="Settings (coming soon)">
