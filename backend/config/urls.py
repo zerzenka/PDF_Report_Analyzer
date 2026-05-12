@@ -12,5 +12,5 @@ urlpatterns = [
     path("api/batches/", include("apps.documents.urls_batches")),
     path("api/documents/", include("apps.documents.urls")),
     path("api/employees/", include("apps.employees.urls")),
-    # path("api/reports/", include("apps.reports.urls")),
+    path("api/reports/", include("apps.reports.urls")),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

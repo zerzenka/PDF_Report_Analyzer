@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -74,6 +74,19 @@ function PdfPane({ fileUrl }) {
   const [numPages, setNumPages] = useState(null);
   const containerRef = useRef(null);
   const [width, setWidth] = useState(520);
+  const [zoom, setZoom] = useState(1.0);
+
+  const zoomPct = Math.round(zoom * 100);
+  const canZoomOut = zoom > 0.5;
+  const canZoomIn = zoom < 2.0;
+
+  const zoomOut = () => {
+    setZoom((z) => Math.max(0.5, Math.round((z - 0.25) * 100) / 100));
+  };
+  const zoomIn = () => {
+    setZoom((z) => Math.min(2.0, Math.round((z + 0.25) * 100) / 100));
+  };
+  const fitWidth = () => setZoom(1.0);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -87,43 +100,81 @@ function PdfPane({ fileUrl }) {
     return () => ro.disconnect();
   }, []);
 
-  const token =
-    typeof localStorage !== "undefined"
-      ? localStorage.getItem("access")
-      : null;
-  const file =
-    fileUrl && typeof fileUrl === "string"
-      ? {
-          url: fileUrl,
-          httpHeaders: token ? { Authorization: `Bearer ${token}` } : {},
-        }
-      : null;
+  const token = useMemo(() => {
+    if (typeof localStorage === "undefined") return null;
+    return localStorage.getItem("access");
+  }, []);
+
+  // IMPORTANT: keep `file` stable across zoom changes so `Document` doesn't reload.
+  const file = useMemo(() => {
+    if (!fileUrl || typeof fileUrl !== "string") return null;
+    return {
+      url: fileUrl,
+      httpHeaders: token ? { Authorization: `Bearer ${token}` } : {},
+    };
+  }, [fileUrl, token]);
+
+  const onLoadSuccess = useCallback(({ numPages: n }) => setNumPages(n), []);
 
   return (
-    <div className="detail-pdf-scroll" ref={containerRef}>
-      {file ? (
-        <Document
-          file={file}
-          onLoadSuccess={({ numPages: n }) => setNumPages(n)}
-          loading={<div className="detail-meta">Loading PDF…</div>}
-          error={<div className="list-error">Could not load PDF.</div>}
+    <div className="pdf-pane" ref={containerRef}>
+      <div className="pdf-toolbar" role="toolbar" aria-label="PDF zoom controls">
+        <button
+          type="button"
+          className="pdf-toolbar-btn"
+          onClick={zoomOut}
+          disabled={!canZoomOut}
+          title="Zoom out"
         >
-          {numPages
-            ? Array.from({ length: numPages }, (_, i) => (
-                <div className="detail-pdf-page-wrap" key={i + 1}>
-                  <Page
-                    pageNumber={i + 1}
-                    width={width}
-                    renderTextLayer={false}
-                    renderAnnotationLayer={false}
-                  />
-                </div>
-              ))
-            : null}
-        </Document>
-      ) : (
-        <div className="detail-meta">No PDF file.</div>
-      )}
+          −
+        </button>
+        <div className="pdf-toolbar-zoom" aria-label="Zoom level">
+          {zoomPct}%
+        </div>
+        <button
+          type="button"
+          className="pdf-toolbar-btn"
+          onClick={zoomIn}
+          disabled={!canZoomIn}
+          title="Zoom in"
+        >
+          +
+        </button>
+        <button
+          type="button"
+          className="pdf-toolbar-btn"
+          onClick={fitWidth}
+          title="Fit width"
+        >
+          Fit
+        </button>
+      </div>
+      <div className="pdf-scroll">
+        {file ? (
+          <Document
+            file={file}
+            onLoadSuccess={onLoadSuccess}
+            loading={<div className="detail-meta">Loading PDF…</div>}
+            error={<div className="list-error">Could not load PDF.</div>}
+          >
+            {numPages
+              ? Array.from({ length: numPages }, (_, i) => (
+                  <div className="detail-pdf-page-wrap" key={i + 1}>
+                    <Page
+                      pageNumber={i + 1}
+                      width={Math.floor(width * zoom)}
+                      loading={null}
+                      renderTextLayer={false}
+                      renderAnnotationLayer={false}
+                    />
+                  </div>
+                ))
+              : null}
+          </Document>
+        ) : (
+          <div className="detail-meta">No PDF file.</div>
+        )}
+      </div>
     </div>
   );
 }
@@ -207,7 +258,7 @@ function IconSettings() {
   );
 }
 
-function RowReviewCard({ row, jobId, onRefresh }) {
+function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
   const re = row.resolved_employee;
   const [finalName, setFinalName] = useState(
     () => re?.full_name ?? row.ocr_name_raw ?? "",
@@ -225,11 +276,19 @@ function RowReviewCard({ row, jobId, onRefresh }) {
   const [searchLoading, setSearchLoading] = useState(false);
   const [resolveBusy, setResolveBusy] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
 
   const searchWrapRef = useRef(null);
 
   const isResolved = row.status === "resolved";
   const isManual = row.added_manually;
+  const locked = Boolean(documentLocked);
+  const savedEmployeePk = row.resolved_employee?.id ?? null;
+  const selectionChanged =
+    !locked &&
+    savedEmployeePk != null &&
+    selectedEmployeePk != null &&
+    selectedEmployeePk !== savedEmployeePk;
 
   useEffect(() => {
     const re2 = row.resolved_employee;
@@ -240,7 +299,14 @@ function RowReviewCard({ row, jobId, onRefresh }) {
     setIdSearchQuery("");
     setSearchResults([]);
     setSearchOpen(false);
+    setJustSaved(false);
   }, [row.id, row.status, row.resolved_at, row.resolved_employee?.id]);
+
+  useEffect(() => {
+    if (!justSaved) return undefined;
+    const t = setTimeout(() => setJustSaved(false), 1400);
+    return () => clearTimeout(t);
+  }, [justSaved]);
 
   useEffect(() => {
     function onDocMouseDown(e) {
@@ -296,6 +362,7 @@ function RowReviewCard({ row, jobId, onRefresh }) {
   const conf = Number(row.confidence ?? 0).toFixed(1);
 
   async function pickCandidate(c, idx) {
+    if (locked) return;
     let pk = c.id ?? null;
     if (pk == null && c.employee_id) {
       try {
@@ -318,6 +385,7 @@ function RowReviewCard({ row, jobId, onRefresh }) {
   }
 
   function pickSearchResult(emp) {
+    if (locked) return;
     setSelectedEmployeePk(emp.id);
     setFinalName(emp.full_name ?? "");
     setFinalId(emp.employee_id ?? "");
@@ -341,6 +409,7 @@ function RowReviewCard({ row, jobId, onRefresh }) {
   }
 
   async function onResolve() {
+    if (locked) return;
     setResolveBusy(true);
     try {
       const pk = await resolveEmployeePkFromForm();
@@ -354,6 +423,7 @@ function RowReviewCard({ row, jobId, onRefresh }) {
         resolved_employee: pk,
       });
       await onRefresh();
+      setJustSaved(true);
     } catch (e) {
       window.alert(e.response?.data?.detail || e.message || "Resolve failed.");
     } finally {
@@ -363,6 +433,7 @@ function RowReviewCard({ row, jobId, onRefresh }) {
 
   async function onDelete() {
     if (!row.added_manually) return;
+    if (locked) return;
     if (!window.confirm("Delete this manually added row?")) return;
     setDeleteBusy(true);
     try {
@@ -381,7 +452,8 @@ function RowReviewCard({ row, jobId, onRefresh }) {
       selectedEmployeePk != null &&
       c.id != null &&
       c.id === selectedEmployeePk;
-    return byIdx || byPk ? " selected" : "";
+    if (!(byIdx || byPk)) return "";
+    return selectionChanged ? " selected dirty" : " selected";
   }
 
   return (
@@ -449,9 +521,15 @@ function RowReviewCard({ row, jobId, onRefresh }) {
               key={c.id ?? `${c.employee_id}-${idx}`}
               type="button"
               className={`candidate-tile${candidateSelectedClass(c, idx)}`}
-              onClick={() => {
-                void pickCandidate(c, idx);
-              }}
+              onClick={
+                locked
+                  ? undefined
+                  : () => {
+                      void pickCandidate(c, idx);
+                    }
+              }
+              aria-disabled={locked ? "true" : undefined}
+              tabIndex={locked ? -1 : 0}
             >
               <div className="emp-id">{c.employee_id}</div>
               <div className="emp-name">{c.full_name}</div>
@@ -470,6 +548,7 @@ function RowReviewCard({ row, jobId, onRefresh }) {
             id={`fn-${row.id}`}
             type="text"
             value={finalName}
+            disabled={locked}
             onChange={(e) => setFinalName(e.target.value)}
           />
         </div>
@@ -479,6 +558,7 @@ function RowReviewCard({ row, jobId, onRefresh }) {
             id={`fid-${row.id}`}
             type="text"
             value={finalId}
+            disabled={locked}
             onChange={(e) => setFinalId(e.target.value)}
           />
         </div>
@@ -491,6 +571,7 @@ function RowReviewCard({ row, jobId, onRefresh }) {
             autoComplete="off"
             placeholder="Type digits…"
             value={idSearchQuery}
+            disabled={locked}
             onChange={(e) => setIdSearchQuery(e.target.value)}
             onFocus={() => {
               const q = idSearchQuery.replace(/\D/g, "");
@@ -525,22 +606,46 @@ function RowReviewCard({ row, jobId, onRefresh }) {
       <div className="row-review-actions">
         <button
           type="button"
-          className="btn-resolve"
-          disabled={resolveBusy}
+          className={`btn-resolve${
+            locked
+              ? " btn-resolve--locked"
+              : savedEmployeePk != null
+                ? selectionChanged
+                  ? " btn-resolve--dirty"
+                  : " btn-resolve--uptodate"
+                : ""
+          }`}
+          disabled={
+            locked ||
+            resolveBusy ||
+            (savedEmployeePk != null && !selectionChanged)
+          }
           onClick={onResolve}
         >
-          {resolveBusy
-            ? isResolved
-              ? "Updating…"
-              : "Resolving…"
-            : isResolved
-              ? "Update"
-              : "Resolve"}
+          {resolveBusy ? (
+            savedEmployeePk != null ? (
+              "Saving…"
+            ) : (
+              "Resolving…"
+            )
+          ) : savedEmployeePk != null ? (
+            selectionChanged ? (
+              "Save change"
+            ) : (
+              "Up to date"
+            )
+          ) : (
+            "Resolve"
+          )}
+          {justSaved ? <span className="save-check"> ✓</span> : null}
         </button>
+        {selectionChanged ? (
+          <div className="unsaved-hint">Unsaved change</div>
+        ) : null}
         <button
           type="button"
           className="btn-delete-row"
-          disabled={!row.added_manually || deleteBusy}
+          disabled={locked || !row.added_manually || deleteBusy}
           title={
             row.added_manually
               ? "Delete this manually added row"
@@ -574,6 +679,7 @@ export default function DocumentsPage() {
   const [uploadBusy, setUploadBusy] = useState(false);
   const [submitBusy, setSubmitBusy] = useState(false);
   const [addRowBusy, setAddRowBusy] = useState(false);
+  const [reopenBusy, setReopenBusy] = useState(false);
 
   const loadBatches = useCallback(async () => {
     setBatchesError("");
@@ -816,6 +922,23 @@ export default function DocumentsPage() {
         }
       };
 
+      const handleReopen = async () => {
+        setReopenBusy(true);
+        try {
+          const { data } = await apiClient.post(
+            `/api/documents/${detail.id}/reopen/`,
+          );
+          setDetail(data);
+          patchDocumentInLists(data, setDocsByBatch);
+        } catch (e) {
+          window.alert(
+            e.response?.data?.detail || e.message || "Reopen failed.",
+          );
+        } finally {
+          setReopenBusy(false);
+        }
+      };
+
       const pdfSrc = detail.file ? mediaUrl(detail.file) : "";
 
       return (
@@ -834,6 +957,22 @@ export default function DocumentsPage() {
             </div>
             <div className="detail-split-right">
               <div className="detail-split-right-scroll">
+                {docResolved ? (
+                  <div className="review-lock-banner">
+                    <button
+                      type="button"
+                      className="btn-unlock"
+                      disabled={reopenBusy}
+                      onClick={handleReopen}
+                    >
+                      {reopenBusy ? "Unlocking…" : "Unlock for editing"}
+                    </button>
+                    <div className="review-lock-hint">
+                      This document has been submitted. Unlocking will remove its
+                      HPRecords so you can edit and resubmit.
+                    </div>
+                  </div>
+                ) : null}
                 <div className="review-rows">
                   {rows.length === 0 ? (
                     <p className="detail-meta">No rows recorded.</p>
@@ -844,6 +983,7 @@ export default function DocumentsPage() {
                         row={row}
                         jobId={detail.id}
                         onRefresh={handleRefresh}
+                        documentLocked={docResolved}
                       />
                     ))
                   )}

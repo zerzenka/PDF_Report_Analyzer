@@ -329,3 +329,28 @@ class DocumentViewSet(
 
         job.refresh_from_db()
         return Response(AnalysisJobDetailSerializer(job).data)
+
+    @action(detail=True, methods=["post"], url_path="reopen")
+    def reopen(self, request, pk=None):
+        """
+        POST /api/documents/<uuid>/reopen/
+
+        Allowed only when the document is already submitted (status=resolved).
+        Reverts the document to needs_review and deletes any HPRecords created
+        for this document so reviewers can edit/resubmit safely.
+        """
+        job = self.get_object()
+        if job.status != AnalysisJob.Status.RESOLVED:
+            return Response(
+                {"detail": "Only resolved (submitted) documents can be reopened."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            HPRecord.objects.filter(job=job).delete()
+            job.status = AnalysisJob.Status.NEEDS_REVIEW
+            job.resolved_at = None
+            job.save(update_fields=["status", "resolved_at", "updated_at"])
+
+        job.refresh_from_db()
+        return Response(AnalysisJobDetailSerializer(job).data)
