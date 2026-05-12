@@ -226,9 +226,150 @@
 .documents-detail {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   background: #fff;
   overflow: auto;
   padding: 16px 20px;
+}
+
+.documents-detail--split {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+.detail-split-root {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.detail-split-toolbar {
+  flex-shrink: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.detail-split-title {
+  margin: 0 0 4px;
+  font-size: 1.05rem;
+}
+
+.detail-split {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.detail-split-left {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  background: #3f3f46;
+}
+
+.detail-pdf-scroll {
+  padding: 12px;
+}
+
+.detail-pdf-page-wrap {
+  margin-bottom: 12px;
+}
+
+.detail-split-right {
+  flex: 1;
+  min-width: 0;
+  border-left: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.detail-split-right-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.documents-detail--split .review-rows {
+  padding: 12px 16px 0;
+}
+
+.review-panel-footer {
+  flex-shrink: 0;
+  margin-top: auto;
+  padding: 16px;
+  border-top: 1px solid #e2e8f0;
+  background: #fafafa;
+}
+
+.btn-submit-document {
+  width: 100%;
+  background: #16a34a;
+  color: #fff;
+  border: none;
+  padding: 0.65rem 1rem;
+  border-radius: 8px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  cursor: pointer;
+  margin-bottom: 12px;
+}
+
+.btn-submit-document:hover:not(:disabled) {
+  background: #15803d;
+}
+
+.btn-submit-document:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.submit-hint {
+  margin: 0 0 12px;
+  font-size: 0.875rem;
+}
+
+.submit-hint--pending {
+  color: #6b7280;
+}
+
+.submit-hint--done {
+  color: #15803d;
+  font-weight: 500;
+}
+
+.btn-add-person {
+  width: 100%;
+  background: #fff;
+  border: 1px dashed #94a3b8;
+  color: #334155;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.btn-add-person:hover:not(:disabled) {
+  background: #f8fafc;
+}
+
+.btn-add-person:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.row-manual-muted {
+  color: #64748b;
+  font-weight: 500;
+}
+
+.row-review-card--manual {
+  border-style: dashed;
 }
 
 .detail-empty {
@@ -327,4 +468,236 @@
   padding: 12px;
   color: #b91c1c;
   font-size: 0.8125rem;
+}
+
+/* Review panel (per-row) */
+.review-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.row-review-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #fafbfc;
+}
+
+.row-review-header {
+  font-size: 0.8125rem;
+  color: #334155;
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+
+.row-resolved-check {
+  color: #16a34a;
+  font-weight: 700;
+  margin-left: 2px;
+}
+
+.row-review-header strong {
+  color: #0f172a;
+}
+
+.row-review-crops {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.row-review-crop {
+  flex: 1;
+  min-width: 120px;
+  max-width: 220px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.row-review-crop img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 140px;
+  object-fit: contain;
+}
+
+.row-review-crop-placeholder {
+  min-height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: #94a3b8;
+  padding: 8px;
+}
+
+.row-review-candidates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.candidate-tile {
+  flex: 1;
+  min-width: 140px;
+  max-width: 200px;
+  border: 2px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  background: #fff;
+  text-align: left;
+  font: inherit;
+}
+
+.candidate-tile:hover {
+  border-color: #93c5fd;
+}
+
+.candidate-tile.selected {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.candidate-tile .emp-id {
+  font-weight: 700;
+  font-size: 0.875rem;
+  color: #0f172a;
+}
+
+.candidate-tile .emp-name {
+  font-size: 0.75rem;
+  color: #475569;
+  margin-top: 2px;
+}
+
+.candidate-tile .emp-score {
+  font-size: 0.7rem;
+  color: #64748b;
+  margin-top: 6px;
+}
+
+.row-review-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.row-review-fields label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #475569;
+  margin-bottom: 2px;
+}
+
+.row-review-fields input[type="text"] {
+  width: 100%;
+  max-width: 320px;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  margin-bottom: 0;
+}
+
+.id-search-wrap {
+  position: relative;
+  max-width: 320px;
+}
+
+.id-search-dropdown {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  margin-top: 2px;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  max-height: 280px;
+  overflow-y: auto;
+  z-index: 20;
+}
+
+.id-search-item {
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  background: #fff;
+  cursor: pointer;
+  font: inherit;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.id-search-item:last-child {
+  border-bottom: none;
+}
+
+.id-search-item:hover {
+  background: #f8fafc;
+}
+
+.id-search-item .emp-id {
+  font-weight: 700;
+  font-size: 0.875rem;
+}
+
+.id-search-item .emp-name {
+  font-size: 0.7rem;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+.row-review-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.btn-resolve {
+  background: #16a34a;
+  color: #fff;
+  border: none;
+  padding: 0.45rem 0.9rem;
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.btn-resolve:hover:not(:disabled) {
+  background: #15803d;
+}
+
+.btn-resolve:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-delete-row {
+  background: #fff;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  padding: 0.45rem 0.9rem;
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.btn-delete-row:hover:not(:disabled) {
+  background: #fef2f2;
+}
+
+.btn-delete-row:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }

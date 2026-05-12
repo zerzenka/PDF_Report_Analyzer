@@ -5,8 +5,9 @@ import re
 from datetime import date
 from pathlib import Path
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.core.files import File
+from django.core.files.base import ContentFile
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.documents.models import AnalysisJob, DocumentRow, MonthBatch
@@ -106,7 +107,11 @@ class Command(BaseCommand):
             job.page_count = len(pages) or None
             job.save(update_fields=["page_count", "updated_at"])
 
-            detected = detect_table_rows(azure_result)
+            detected = detect_table_rows(
+                azure_result,
+                pdf_path=job.file.path,
+                job_id=str(job.id),
+            )
 
             # Replace any prior rows (re-run flow)
             DocumentRow.objects.filter(job=job).delete()
@@ -129,6 +134,31 @@ class Command(BaseCommand):
                     match_method=str(m.get("match_method") or ""),
                     status=str(m.get("recommended_status") or DocumentRow.Status.NEEDS_REVIEW),
                 )
+
+                name_rel = row.get("name_crop_rel")
+                if name_rel:
+                    p = Path(settings.MEDIA_ROOT) / name_rel
+                    if p.is_file():
+                        content = p.read_bytes()
+                        p.unlink(missing_ok=True)
+                        dr.name_crop.save(
+                            Path(name_rel).name,
+                            ContentFile(content),
+                            save=False,
+                        )
+
+                id_rel = row.get("id_crop_rel")
+                if id_rel:
+                    p = Path(settings.MEDIA_ROOT) / id_rel
+                    if p.is_file():
+                        content = p.read_bytes()
+                        p.unlink(missing_ok=True)
+                        dr.id_crop.save(
+                            Path(id_rel).name,
+                            ContentFile(content),
+                            save=False,
+                        )
+
                 dr.save()
 
             job.status = AnalysisJob.Status.NEEDS_REVIEW
@@ -157,6 +187,20 @@ class Command(BaseCommand):
             self.stdout.write(f"  ocr_id_clean={r.ocr_id_clean!r}")
             self.stdout.write(f"  confidence={r.confidence:.2f}")
             self.stdout.write(f"  match_method={r.match_method!r}")
+            if r.name_crop:
+                np = Path(r.name_crop.path)
+                self.stdout.write(
+                    f"  name_crop: {r.name_crop.name} ({np.stat().st_size} bytes on disk)"
+                )
+            else:
+                self.stdout.write("  name_crop: (none)")
+            if r.id_crop:
+                ip = Path(r.id_crop.path)
+                self.stdout.write(
+                    f"  id_crop: {r.id_crop.name} ({ip.stat().st_size} bytes on disk)"
+                )
+            else:
+                self.stdout.write("  id_crop: (none)")
 
             top = (r.top_candidates or [])[:3]
             if not top:

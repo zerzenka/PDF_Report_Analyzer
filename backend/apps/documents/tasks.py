@@ -1,4 +1,8 @@
+from pathlib import Path
+
 from celery import shared_task
+from django.conf import settings
+from django.core.files.base import ContentFile
 
 from apps.documents.models import AnalysisJob, DocumentRow
 from apps.documents.services.matcher import match_row
@@ -25,7 +29,11 @@ def process_pdf_task(job_id: str) -> None:
         job.page_count = len(pages) or None
         job.save(update_fields=["page_count", "updated_at"])
 
-        detected = detect_table_rows(azure_result)
+        detected = detect_table_rows(
+            azure_result,
+            pdf_path=job.file.path,
+            job_id=str(job.id),
+        )
 
         # Replace any prior rows (re-run flow)
         DocumentRow.objects.filter(job=job).delete()
@@ -48,6 +56,30 @@ def process_pdf_task(job_id: str) -> None:
                 match_method=str(m.get("match_method") or ""),
                 status=str(m.get("recommended_status") or DocumentRow.Status.NEEDS_REVIEW),
             )
+
+            name_rel = row.get("name_crop_rel")
+            if name_rel:
+                path = Path(settings.MEDIA_ROOT) / name_rel
+                if path.is_file():
+                    content = path.read_bytes()
+                    path.unlink(missing_ok=True)
+                    dr.name_crop.save(
+                        Path(name_rel).name,
+                        ContentFile(content),
+                        save=False,
+                    )
+
+            id_rel = row.get("id_crop_rel")
+            if id_rel:
+                path = Path(settings.MEDIA_ROOT) / id_rel
+                if path.is_file():
+                    content = path.read_bytes()
+                    path.unlink(missing_ok=True)
+                    dr.id_crop.save(
+                        Path(id_rel).name,
+                        ContentFile(content),
+                        save=False,
+                    )
 
             dr.save()
 

@@ -242,6 +242,25 @@ class DocumentViewSet(
         )
         return Response(DocumentRowSerializer(row).data)
 
+    @action(
+        detail=True,
+        methods=["delete"],
+        url_path=r"rows/(?P<row_id>[0-9]+)",
+    )
+    def delete_row(self, request, pk=None, row_id=None):
+        job = self.get_object()
+        try:
+            row = DocumentRow.objects.get(pk=row_id, job=job)
+        except DocumentRow.DoesNotExist:
+            raise NotFound("Row not found.")
+        if not row.added_manually:
+            return Response(
+                {"detail": "Only manually added rows can be deleted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        row.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @action(detail=True, methods=["post"], url_path="rows/add")
     def add_row(self, request, pk=None):
         job = self.get_object()

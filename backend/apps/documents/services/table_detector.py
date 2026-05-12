@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Iterable
+
+from django.conf import settings
+
+if TYPE_CHECKING:
+    from PIL.Image import Image as PILImage
 
 
 @dataclass(frozen=True)
@@ -64,19 +71,102 @@ def _clean_id_digits(raw: str) -> str:
     digits_only = re.sub(r"\s+", "", digits_only)
     return digits_only if len(digits_only) == 6 and digits_only.isdigit() else ""
 
+
 def _digits_only(raw: str) -> str:
     # keep only digits (used for concatenating split tokens)
     return re.sub(r"[^0-9]", "", raw or "")
 
 
+def _word_inch_bbox(w: _AzureWord) -> tuple[float, float, float, float]:
+    xs = (w.polygon[0], w.polygon[2], w.polygon[4], w.polygon[6])
+    ys = (w.polygon[1], w.polygon[3], w.polygon[5], w.polygon[7])
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _union_inch_bbox(words: list[_AzureWord]) -> tuple[float, float, float, float] | None:
+    if not words:
+        return None
+    bbs = [_word_inch_bbox(w) for w in words]
+    return (
+        min(b[0] for b in bbs),
+        min(b[1] for b in bbs),
+        max(b[2] for b in bbs),
+        max(b[3] for b in bbs),
+    )
+
+
+def _inch_bbox_to_crop_pixels(
+    inch_bbox: tuple[float, float, float, float],
+    dpi: float,
+    img_w: int,
+    img_h: int,
+    pad_px: int = 10,
+) -> tuple[int, int, int, int] | None:
+    """Azure polygons are in inches; pixel = inch * DPI. Add padding in pixels."""
+    min_x, min_y, max_x, max_y = inch_bbox
+    x0 = math.floor(min_x * dpi - pad_px)
+    y0 = math.floor(min_y * dpi - pad_px)
+    x1 = math.ceil(max_x * dpi + pad_px)
+    y1 = math.ceil(max_y * dpi + pad_px)
+    x0 = max(0, min(x0, img_w - 1))
+    y0 = max(0, min(y0, img_h - 1))
+    x1 = max(x0 + 1, min(x1, img_w))
+    y1 = max(y0 + 1, min(y1, img_h))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0, y0, x1, y1)
+
+
+def _render_pdf_page1_pil(pdf_path: str, dpi: float = 200):
+    """Render first PDF page to a PIL RGB image at ``dpi`` (default 200)."""
+    import pypdfium2 as pdfium
+
+    pdf = pdfium.PdfDocument(pdf_path)
+    if len(pdf) < 1:
+        pdf.close()
+        raise ValueError("PDF has no pages to render.")
+    page = pdf[0]
+    scale = dpi / 72.0
+    bitmap = page.render(scale=scale)
+    try:
+        pil_image = bitmap.to_pil()
+    finally:
+        closer = getattr(bitmap, "close", None)
+        if callable(closer):
+            closer()
+        pdf.close()
+    if pil_image.mode != "RGB":
+        pil_image = pil_image.convert("RGB")
+    return pil_image
+
+
+def _save_crop_png(
+    page_img: "PILImage",
+    crop_box: tuple[int, int, int, int],
+    job_id: str,
+    row_index: int,
+    kind: str,
+) -> str:
+    """Write PNG under MEDIA_ROOT/crops/ and return path relative to MEDIA_ROOT."""
+    crops_dir = Path(settings.MEDIA_ROOT) / "crops"
+    crops_dir.mkdir(parents=True, exist_ok=True)
+    fname = f"{job_id}_row{row_index}_{kind}.png"
+    out_path = crops_dir / fname
+    page_img.crop(crop_box).save(out_path, "PNG")
+    return f"crops/{fname}"
+
+
 def detect_table_rows(
     azure_result: dict,
+    pdf_path: str | None = None,
+    job_id: str | None = None,
     *_args: Any,
     max_rows: int = 12,
+    dpi: float = 200,
     **_kwargs: Any,
 ) -> list[dict[str, Any]]:
     """
-    Parse Azure OCR output directly (no image cropping / no re-OCR).
+    Parse Azure OCR output directly (no re-OCR on crops).
 
     Strategy (per spec):
     - Document is landscape ~16.5 x 11.7 inches (Azure coords are inches for this file)
@@ -86,7 +176,15 @@ def detect_table_rows(
     - For each NAME anchor, collect words in same horizontal band (±0.4 inches in y)
     - Name is words with x between ~8.5 and ~11.5
     - ID is 6-digit number after SA ID/SAID label; fallback to any 6-digit token with x > 12.0
-    - Return list of dicts: {row_index, ocr_name_raw, ocr_id_raw, ocr_id_clean}
+    - Return list of dicts: {row_index, ocr_name_raw, ocr_id_raw, ocr_id_clean,
+      name_crop_rel?, id_crop_rel?} — crop paths relative to MEDIA_ROOT when
+      ``pdf_path`` and ``job_id`` are provided.
+
+    Crop generation:
+    - Render page 1 at ``dpi`` (default 200) via pypdfium2 → PIL
+    - Union bounding box of Azure word polygons (inches) for tokens that built
+      name / ID strings; convert to pixels as ``coord * dpi``, add 10px padding
+    - Save under ``media/crops/<job_id>_row<N>_name.png`` (and ``_id.png``)
     """
     words = list(_iter_page_words(azure_result, 0))
     if not words:
@@ -130,7 +228,7 @@ def detect_table_rows(
         "THAT",
     }
 
-    out: list[dict[str, Any]] = []
+    row_build: list[dict[str, Any]] = []
     for idx, anchor in enumerate(anchors[:max_rows]):
         y_low = mids[idx - 1] if idx > 0 else float("-inf")
         y_high = mids[idx] if idx < len(mids) else float("inf")
@@ -171,6 +269,7 @@ def detect_table_rows(
             name_x_max = min(name_x_max, label.x_left)
 
         name_tokens: list[str] = []
+        name_words: list[_AzureWord] = []
         for w in band:
             x = w.x_left
             if not (name_x_min <= x <= name_x_max):
@@ -184,10 +283,12 @@ def detect_table_rows(
             if any(ch.isdigit() for ch in t):
                 continue
             name_tokens.append(t)
+            name_words.append(w)
         ocr_name_raw = " ".join(name_tokens).strip()
 
         ocr_id_raw = ""
         ocr_id_clean = ""
+        id_words: list[_AzureWord] = []
 
         if label is not None:
             # Only consider ID tokens to the RIGHT of label OR immediately below (<= 0.3in) and right of it.
@@ -247,15 +348,51 @@ def detect_table_rows(
                 used_id_word_idxs.update(used_idxs)
                 ocr_id_clean = digits6
                 ocr_id_raw = digits6
+                id_words = [w for w in pool if w.idx in used_idxs]
 
-        out.append(
+        row_build.append(
             {
                 "row_index": idx,
                 "ocr_name_raw": ocr_name_raw,
                 "ocr_id_raw": ocr_id_raw,
                 "ocr_id_clean": ocr_id_clean,
+                "_name_words": name_words,
+                "_id_words": id_words,
             }
         )
 
-    return out
+    out: list[dict[str, Any]] = []
+    page_img = None
+    if pdf_path and job_id:
+        page_img = _render_pdf_page1_pil(pdf_path, dpi=dpi)
+    img_w, img_h = (page_img.size if page_img else (0, 0))
 
+    for row in row_build:
+        name_words: list[_AzureWord] = row.pop("_name_words")  # type: ignore[assignment]
+        id_words: list[_AzureWord] = row.pop("_id_words")  # type: ignore[assignment]
+        ridx = int(row["row_index"])
+
+        name_crop_rel: str | None = None
+        id_crop_rel: str | None = None
+
+        if page_img is not None:
+            ub = _union_inch_bbox(name_words)
+            if ub is not None:
+                box = _inch_bbox_to_crop_pixels(ub, dpi, img_w, img_h, pad_px=10)
+                if box is not None:
+                    name_crop_rel = _save_crop_png(page_img, box, job_id, ridx, "name")
+
+            ub_id = _union_inch_bbox(id_words)
+            if ub_id is not None:
+                box_id = _inch_bbox_to_crop_pixels(ub_id, dpi, img_w, img_h, pad_px=10)
+                if box_id is not None:
+                    id_crop_rel = _save_crop_png(page_img, box_id, job_id, ridx, "id")
+
+        if name_crop_rel:
+            row["name_crop_rel"] = name_crop_rel
+        if id_crop_rel:
+            row["id_crop_rel"] = id_crop_rel
+
+        out.append(row)
+
+    return out

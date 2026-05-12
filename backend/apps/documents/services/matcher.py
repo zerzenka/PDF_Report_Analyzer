@@ -45,7 +45,7 @@ def match_row(ocr_name: str, ocr_id_raw: str) -> dict[str, Any]:
         qs = qs.filter(type=emp_type)
 
     candidates: list[dict[str, Any]] = []
-    for e in qs.only("employee_id", "full_name", "type"):
+    for e in qs.only("id", "employee_id", "full_name", "type"):
         cand_id = str(e.employee_id or "")
         cand_name = str(e.full_name or "")
         cand_name_lower = cand_name.lower()
@@ -60,6 +60,7 @@ def match_row(ocr_name: str, ocr_id_raw: str) -> dict[str, Any]:
 
         candidates.append(
             {
+                "id": e.id,
                 "employee_id": cand_id,
                 "full_name": cand_name,
                 "type": e.type,
@@ -96,6 +97,7 @@ def match_row(ocr_name: str, ocr_id_raw: str) -> dict[str, Any]:
         "employee_type": emp_type,
         "top_candidates": [
             {
+                "id": c["id"],
                 "employee_id": c["employee_id"],
                 "full_name": c["full_name"],
                 "type": c["type"],

@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Document, Page } from "react-pdf";
+import "react-pdf/dist/Page/AnnotationLayer.css";
+import "react-pdf/dist/Page/TextLayer.css";
 import { apiClient } from "../api/client.js";
 import "./DocumentsPage.css";
 
@@ -6,6 +9,15 @@ function normalizeList(data) {
   if (Array.isArray(data)) return data;
   if (data && Array.isArray(data.results)) return data.results;
   return [];
+}
+
+function mediaUrl(path) {
+  if (!path) return "";
+  const s = String(path);
+  if (s.startsWith("http")) return s;
+  const base = (apiClient.defaults.baseURL || "").replace(/\/$/, "");
+  const p = s.startsWith("/") ? s : `/${s}`;
+  return `${base}${p}`;
 }
 
 function formatMonthHeading(batch) {
@@ -21,6 +33,99 @@ function formatMonthHeading(batch) {
 function truncateFilename(name, max = 42) {
   if (!name || name.length <= max) return name || "";
   return `${name.slice(0, max - 1)}…`;
+}
+
+function formatMatchMethod(m) {
+  if (!m) return "—";
+  const map = {
+    auto_resolved: "Auto-resolved",
+    ambiguous_manual_review: "Ambiguous (manual review)",
+    number_only_name_mismatch: "ID match, name mismatch",
+  };
+  return map[m] || m;
+}
+
+function patchDocumentInLists(job, setDocsByBatch) {
+  if (!job?.id) return;
+  const rows = Array.isArray(job.rows) ? job.rows : [];
+  const total = rows.length;
+  const resolved = rows.filter((r) => r.status === "resolved").length;
+  setDocsByBatch((prev) => {
+    const next = { ...prev };
+    for (const batchId of Object.keys(next)) {
+      const list = next[batchId];
+      if (!Array.isArray(list)) continue;
+      const idx = list.findIndex((d) => d.id === job.id);
+      if (idx === -1) continue;
+      const copy = [...list];
+      copy[idx] = {
+        ...copy[idx],
+        rows_total: total,
+        rows_resolved: resolved,
+        status: job.status,
+      };
+      next[batchId] = copy;
+    }
+    return next;
+  });
+}
+
+function PdfPane({ fileUrl }) {
+  const [numPages, setNumPages] = useState(null);
+  const containerRef = useRef(null);
+  const [width, setWidth] = useState(520);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) {
+        setWidth(Math.max(240, Math.floor(e.contentRect.width) - 16));
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const token =
+    typeof localStorage !== "undefined"
+      ? localStorage.getItem("access")
+      : null;
+  const file =
+    fileUrl && typeof fileUrl === "string"
+      ? {
+          url: fileUrl,
+          httpHeaders: token ? { Authorization: `Bearer ${token}` } : {},
+        }
+      : null;
+
+  return (
+    <div className="detail-pdf-scroll" ref={containerRef}>
+      {file ? (
+        <Document
+          file={file}
+          onLoadSuccess={({ numPages: n }) => setNumPages(n)}
+          loading={<div className="detail-meta">Loading PDF…</div>}
+          error={<div className="list-error">Could not load PDF.</div>}
+        >
+          {numPages
+            ? Array.from({ length: numPages }, (_, i) => (
+                <div className="detail-pdf-page-wrap" key={i + 1}>
+                  <Page
+                    pageNumber={i + 1}
+                    width={width}
+                    renderTextLayer={false}
+                    renderAnnotationLayer={false}
+                  />
+                </div>
+              ))
+            : null}
+        </Document>
+      ) : (
+        <div className="detail-meta">No PDF file.</div>
+      )}
+    </div>
+  );
 }
 
 const STATUS_BADGE = {
@@ -102,6 +207,354 @@ function IconSettings() {
   );
 }
 
+function RowReviewCard({ row, jobId, onRefresh }) {
+  const re = row.resolved_employee;
+  const [finalName, setFinalName] = useState(
+    () => re?.full_name ?? row.ocr_name_raw ?? "",
+  );
+  const [finalId, setFinalId] = useState(
+    () => re?.employee_id ?? row.ocr_id_clean ?? "",
+  );
+  const [selectedEmployeePk, setSelectedEmployeePk] = useState(
+    () => re?.id ?? null,
+  );
+  const [selectedCandidateIdx, setSelectedCandidateIdx] = useState(null);
+  const [idSearchQuery, setIdSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [resolveBusy, setResolveBusy] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+
+  const searchWrapRef = useRef(null);
+
+  const isResolved = row.status === "resolved";
+  const isManual = row.added_manually;
+
+  useEffect(() => {
+    const re2 = row.resolved_employee;
+    setFinalName(re2?.full_name ?? row.ocr_name_raw ?? "");
+    setFinalId(re2?.employee_id ?? row.ocr_id_clean ?? "");
+    setSelectedEmployeePk(re2?.id ?? null);
+    setSelectedCandidateIdx(null);
+    setIdSearchQuery("");
+    setSearchResults([]);
+    setSearchOpen(false);
+  }, [row.id, row.status, row.resolved_at, row.resolved_employee?.id]);
+
+  useEffect(() => {
+    function onDocMouseDown(e) {
+      if (!searchOpen) return;
+      if (searchWrapRef.current && !searchWrapRef.current.contains(e.target)) {
+        setSearchOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [searchOpen]);
+
+  useEffect(() => {
+    const q = idSearchQuery.replace(/\D/g, "");
+    if (!q.length) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      return;
+    }
+    setSearchLoading(true);
+    const ac = new AbortController();
+    const t = setTimeout(async () => {
+      try {
+        const { data } = await apiClient.get("/api/employees/search/", {
+          params: { q },
+          signal: ac.signal,
+        });
+        const list = Array.isArray(data) ? data : [];
+        setSearchResults(list.slice(0, 8));
+        setSearchOpen(true);
+      } catch (err) {
+        if (err.code !== "ERR_CANCELED" && err.name !== "CanceledError") {
+          setSearchResults([]);
+        }
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 300);
+    return () => {
+      clearTimeout(t);
+      ac.abort();
+    };
+  }, [idSearchQuery]);
+
+  const top3 = Array.isArray(row.top_candidates)
+    ? row.top_candidates.slice(0, 3)
+    : [];
+
+  const rowLabel = Number.isFinite(Number(row.row_index))
+    ? `Row ${Number(row.row_index) + 1}`
+    : `Row ${row.row_index}`;
+
+  const conf = Number(row.confidence ?? 0).toFixed(1);
+
+  async function pickCandidate(c, idx) {
+    let pk = c.id ?? null;
+    if (pk == null && c.employee_id) {
+      try {
+        const digits = String(c.employee_id).replace(/\D/g, "");
+        const { data } = await apiClient.get("/api/employees/search/", {
+          params: { q: digits || c.employee_id },
+        });
+        const list = Array.isArray(data) ? data : [];
+        const exact = list.find((e) => e.employee_id === String(c.employee_id));
+        pk = exact?.id ?? null;
+      } catch {
+        pk = null;
+      }
+    }
+    setSelectedEmployeePk(pk);
+    setFinalName(c.full_name ?? "");
+    setFinalId(c.employee_id ?? "");
+    setSelectedCandidateIdx(idx);
+    setSearchOpen(false);
+  }
+
+  function pickSearchResult(emp) {
+    setSelectedEmployeePk(emp.id);
+    setFinalName(emp.full_name ?? "");
+    setFinalId(emp.employee_id ?? "");
+    setSelectedCandidateIdx(null);
+    setSearchOpen(false);
+    setIdSearchQuery("");
+  }
+
+  async function resolveEmployeePkFromForm() {
+    if (selectedEmployeePk) return selectedEmployeePk;
+    const digits = finalId.replace(/\D/g, "");
+    if (!digits) return null;
+    const { data } = await apiClient.get("/api/employees/search/", {
+      params: { q: digits },
+    });
+    const list = Array.isArray(data) ? data : [];
+    const exact = list.find((e) => e.employee_id === digits);
+    if (exact) return exact.id;
+    if (list.length === 1) return list[0].id;
+    return null;
+  }
+
+  async function onResolve() {
+    setResolveBusy(true);
+    try {
+      const pk = await resolveEmployeePkFromForm();
+      if (!pk) {
+        window.alert(
+          "Select a candidate, pick from search, or enter a valid employee ID.",
+        );
+        return;
+      }
+      await apiClient.patch(`/api/documents/${jobId}/rows/${row.id}/resolve/`, {
+        resolved_employee: pk,
+      });
+      await onRefresh();
+    } catch (e) {
+      window.alert(e.response?.data?.detail || e.message || "Resolve failed.");
+    } finally {
+      setResolveBusy(false);
+    }
+  }
+
+  async function onDelete() {
+    if (!row.added_manually) return;
+    if (!window.confirm("Delete this manually added row?")) return;
+    setDeleteBusy(true);
+    try {
+      await apiClient.delete(`/api/documents/${jobId}/rows/${row.id}/`);
+      await onRefresh();
+    } catch (e) {
+      window.alert(e.response?.data?.detail || e.message || "Delete failed.");
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
+  function candidateSelectedClass(c, idx) {
+    const byIdx = selectedCandidateIdx === idx;
+    const byPk =
+      selectedEmployeePk != null &&
+      c.id != null &&
+      c.id === selectedEmployeePk;
+    return byIdx || byPk ? " selected" : "";
+  }
+
+  return (
+    <div className={`row-review-card${isManual ? " row-review-card--manual" : ""}`}>
+      <div className="row-review-header">
+        <strong>
+          {rowLabel}
+          {isResolved ? (
+            <span className="row-resolved-check" title="Row resolved">
+              {" "}
+              ✓
+            </span>
+          ) : null}
+        </strong>
+        {!isManual ? (
+          <>
+            {" · "}
+            OCR: {row.ocr_name_raw || "—"} /{" "}
+            {row.ocr_id_clean || row.ocr_id_raw || "—"}
+            {" · "}
+            Confidence: <strong>{conf}%</strong>
+            {" · "}
+            Method: <strong>{formatMatchMethod(row.match_method)}</strong>
+          </>
+        ) : (
+          <>
+            {" · "}
+            <span className="row-manual-muted">Manually added — use Search ID</span>
+          </>
+        )}
+      </div>
+
+      {isManual ? (
+        <div className="row-review-crops">
+          <div className="row-review-crop">
+            <div className="row-review-crop-placeholder">Manually added</div>
+          </div>
+          <div className="row-review-crop">
+            <div className="row-review-crop-placeholder">Manually added</div>
+          </div>
+        </div>
+      ) : (
+        <div className="row-review-crops">
+          <div className="row-review-crop">
+            {row.name_crop ? (
+              <img src={mediaUrl(row.name_crop)} alt="Name crop" />
+            ) : (
+              <div className="row-review-crop-placeholder">No name crop</div>
+            )}
+          </div>
+          <div className="row-review-crop">
+            {row.id_crop ? (
+              <img src={mediaUrl(row.id_crop)} alt="ID crop" />
+            ) : (
+              <div className="row-review-crop-placeholder">No ID crop</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {!isManual && top3.length > 0 ? (
+        <div className="row-review-candidates">
+          {top3.map((c, idx) => (
+            <button
+              key={c.id ?? `${c.employee_id}-${idx}`}
+              type="button"
+              className={`candidate-tile${candidateSelectedClass(c, idx)}`}
+              onClick={() => {
+                void pickCandidate(c, idx);
+              }}
+            >
+              <div className="emp-id">{c.employee_id}</div>
+              <div className="emp-name">{c.full_name}</div>
+              <div className="emp-score">
+                Total score: {Number(c.total_score ?? 0).toFixed(1)}%
+              </div>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="row-review-fields">
+        <div>
+          <label htmlFor={`fn-${row.id}`}>Name (final)</label>
+          <input
+            id={`fn-${row.id}`}
+            type="text"
+            value={finalName}
+            onChange={(e) => setFinalName(e.target.value)}
+          />
+        </div>
+        <div>
+          <label htmlFor={`fid-${row.id}`}>ID (final)</label>
+          <input
+            id={`fid-${row.id}`}
+            type="text"
+            value={finalId}
+            onChange={(e) => setFinalId(e.target.value)}
+          />
+        </div>
+        <div ref={searchWrapRef} className="id-search-wrap">
+          <label htmlFor={`sid-${row.id}`}>Search ID</label>
+          <input
+            id={`sid-${row.id}`}
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            placeholder="Type digits…"
+            value={idSearchQuery}
+            onChange={(e) => setIdSearchQuery(e.target.value)}
+            onFocus={() => {
+              const q = idSearchQuery.replace(/\D/g, "");
+              if (q.length && searchResults.length) setSearchOpen(true);
+            }}
+          />
+          {searchOpen && searchResults.length > 0 ? (
+            <div className="id-search-dropdown" role="listbox">
+              {searchResults.map((emp) => (
+                <button
+                  key={emp.id}
+                  type="button"
+                  className="id-search-item"
+                  role="option"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => pickSearchResult(emp)}
+                >
+                  <div className="emp-id">{emp.employee_id}</div>
+                  <div className="emp-name">{emp.full_name}</div>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {searchLoading ? (
+            <div style={{ fontSize: "0.7rem", color: "#64748b", marginTop: 4 }}>
+              Searching…
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="row-review-actions">
+        <button
+          type="button"
+          className="btn-resolve"
+          disabled={resolveBusy}
+          onClick={onResolve}
+        >
+          {resolveBusy
+            ? isResolved
+              ? "Updating…"
+              : "Resolving…"
+            : isResolved
+              ? "Update"
+              : "Resolve"}
+        </button>
+        <button
+          type="button"
+          className="btn-delete-row"
+          disabled={!row.added_manually || deleteBusy}
+          title={
+            row.added_manually
+              ? "Delete this manually added row"
+              : "Only manually added rows can be deleted"
+          }
+          onClick={onDelete}
+        >
+          {deleteBusy ? "…" : "Delete"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function DocumentsPage() {
   const [batches, setBatches] = useState([]);
   const [batchesError, setBatchesError] = useState("");
@@ -119,6 +572,8 @@ export default function DocumentsPage() {
   const uploadInputRef = useRef(null);
   const [uploadBatchId, setUploadBatchId] = useState(null);
   const [uploadBusy, setUploadBusy] = useState(false);
+  const [submitBusy, setSubmitBusy] = useState(false);
+  const [addRowBusy, setAddRowBusy] = useState(false);
 
   const loadBatches = useCallback(async () => {
     setBatchesError("");
@@ -182,6 +637,7 @@ export default function DocumentsPage() {
     try {
       const { data } = await apiClient.get(`/api/documents/${jobId}/`);
       setDetail(data);
+      patchDocumentInLists(data, setDocsByBatch);
     } catch (e) {
       setDetailError(
         e.response?.data?.detail || e.message || "Failed to load document.",
@@ -265,6 +721,7 @@ export default function DocumentsPage() {
     try {
       const { data } = await apiClient.post(`/api/documents/${detail.id}/rerun/`);
       setDetail(data);
+      patchDocumentInLists(data, setDocsByBatch);
       if (detail.batch_id != null) {
         await loadBatchDocuments(detail.batch_id);
       }
@@ -319,38 +776,114 @@ export default function DocumentsPage() {
 
     if (detail.status === "needs_review" || detail.status === "resolved") {
       const rows = Array.isArray(detail.rows) ? detail.rows : [];
+      const total = rows.length;
+      const resolvedCount = rows.filter((r) => r.status === "resolved").length;
+      const allRowsResolved = total > 0 && resolvedCount === total;
+      const docResolved = detail.status === "resolved";
+
+      const handleRefresh = async () => {
+        await fetchDetail(selectedId);
+      };
+
+      const handleSubmitDocument = async () => {
+        setSubmitBusy(true);
+        try {
+          const { data } = await apiClient.post(
+            `/api/documents/${detail.id}/submit/`,
+          );
+          setDetail(data);
+          patchDocumentInLists(data, setDocsByBatch);
+        } catch (e) {
+          window.alert(
+            e.response?.data?.detail || e.message || "Submit failed.",
+          );
+        } finally {
+          setSubmitBusy(false);
+        }
+      };
+
+      const handleAddPerson = async () => {
+        setAddRowBusy(true);
+        try {
+          await apiClient.post(`/api/documents/${detail.id}/rows/add/`, {});
+          await fetchDetail(selectedId);
+        } catch (e) {
+          window.alert(
+            e.response?.data?.detail || e.message || "Could not add row.",
+          );
+        } finally {
+          setAddRowBusy(false);
+        }
+      };
+
+      const pdfSrc = detail.file ? mediaUrl(detail.file) : "";
+
       return (
-        <div>
-          <div className="detail-section">
-            <h2>{truncateFilename(detail.filename, 120)}</h2>
+        <div className="detail-split-root">
+          <div className="detail-split-toolbar">
+            <h2 className="detail-split-title">
+              {truncateFilename(detail.filename, 120)}
+            </h2>
             <div className="detail-meta">
               Status: <StatusBadge status={detail.status} />
             </div>
           </div>
-          <table className="rows-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>OCR name (raw)</th>
-                <th>OCR ID (clean)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 ? (
-                <tr>
-                  <td colSpan={3}>No rows recorded.</td>
-                </tr>
-              ) : (
-                rows.map((row) => (
-                  <tr key={row.id}>
-                    <td>{row.row_index}</td>
-                    <td>{row.ocr_name_raw || "—"}</td>
-                    <td>{row.ocr_id_clean || "—"}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+          <div className="detail-split">
+            <div className="detail-split-left">
+              <PdfPane fileUrl={pdfSrc} />
+            </div>
+            <div className="detail-split-right">
+              <div className="detail-split-right-scroll">
+                <div className="review-rows">
+                  {rows.length === 0 ? (
+                    <p className="detail-meta">No rows recorded.</p>
+                  ) : (
+                    rows.map((row) => (
+                      <RowReviewCard
+                        key={row.id}
+                        row={row}
+                        jobId={detail.id}
+                        onRefresh={handleRefresh}
+                      />
+                    ))
+                  )}
+                </div>
+                <div className="review-panel-footer">
+                  {docResolved ? (
+                    <p className="submit-hint submit-hint--done">
+                      Document submitted — all rows are locked in for this month.
+                    </p>
+                  ) : allRowsResolved ? (
+                    <button
+                      type="button"
+                      className="btn-submit-document"
+                      disabled={submitBusy}
+                      onClick={handleSubmitDocument}
+                    >
+                      {submitBusy ? "Submitting…" : "Submit Document"}
+                    </button>
+                  ) : total === 0 ? (
+                    <p className="submit-hint submit-hint--pending">
+                      No rows yet — wait for processing or use + Add person.
+                    </p>
+                  ) : (
+                    <p className="submit-hint submit-hint--pending">
+                      {resolvedCount} of {total} rows resolved — resolve all rows
+                      to submit
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    className="btn-add-person"
+                    disabled={addRowBusy || docResolved}
+                    onClick={handleAddPerson}
+                  >
+                    {addRowBusy ? "Adding…" : "+ Add person"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       );
     }
@@ -492,7 +1025,15 @@ export default function DocumentsPage() {
         </div>
       </section>
 
-      <main className="documents-detail" aria-label="Document details">
+      <main
+        className={`documents-detail${
+          detail &&
+          (detail.status === "needs_review" || detail.status === "resolved")
+            ? " documents-detail--split"
+            : ""
+        }`}
+        aria-label="Document details"
+      >
         {renderDetail()}
       </main>
     </div>
