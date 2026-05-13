@@ -83,6 +83,43 @@
   white-space: nowrap;
 }
 
+.documents-list-filters {
+  display: flex;
+  gap: 8px;
+  padding: 0 12px 10px;
+  border-bottom: 1px solid #e5e7eb;
+  flex-wrap: wrap;
+}
+
+.documents-list-filter-label {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  position: relative;
+}
+
+.documents-list-filter-select {
+  width: 100%;
+  font-size: 0.75rem;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #1a1a1a;
+}
+
+.documents-list-filter-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .documents-list-header .upload-btn:hover {
   background: #1d4ed8;
 }

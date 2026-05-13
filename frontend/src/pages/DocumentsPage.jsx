@@ -31,6 +31,32 @@ function formatMonthHeading(batch) {
   return batch?.month_label || "Batch";
 }
 
+/** Stable key for month filter (matches API batch fields). */
+function batchMonthKey(batch) {
+  if (batch?.month_date) return String(batch.month_date);
+  if (batch?.month_label) return String(batch.month_label);
+  return `id:${batch?.id ?? ""}`;
+}
+
+function compareBatchesByMonthDesc(a, b) {
+  const ta = a?.month_date
+    ? new Date(`${a.month_date}T12:00:00`).getTime()
+    : NaN;
+  const tb = b?.month_date
+    ? new Date(`${b.month_date}T12:00:00`).getTime()
+    : NaN;
+  if (!Number.isNaN(ta) && !Number.isNaN(tb) && ta !== tb) return tb - ta;
+  return String(b?.month_label || "").localeCompare(String(a?.month_label || ""));
+}
+
+function docMatchesStatusFilter(doc, filterStatus) {
+  if (filterStatus === "all") return true;
+  if (filterStatus === "processing") {
+    return doc.status === "processing" || doc.status === "queued";
+  }
+  return doc.status === filterStatus;
+}
+
 function truncateFilename(name, max = 42) {
   if (!name || name.length <= max) return name || "";
   return `${name.slice(0, max - 1)}…`;
@@ -300,16 +326,85 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
         ));
 
   useEffect(() => {
-    const re2 = row.resolved_employee;
-    setFinalName(re2?.full_name ?? row.ocr_name_raw ?? "");
-    setFinalId(re2?.employee_id ?? row.ocr_id_clean ?? "");
-    setSelectedEmployeePk(re2?.id ?? null);
-    setSelectedCandidateIdx(null);
     setIdSearchQuery("");
     setSearchResults([]);
     setSearchOpen(false);
     setJustSaved(false);
-  }, [row.id, row.status, row.resolved_at, row.resolved_employee?.id, row.unresolvable]);
+
+    if (locked) {
+      const re2 = row.resolved_employee;
+      setFinalName(re2?.full_name ?? row.ocr_name_raw ?? "");
+      setFinalId(re2?.employee_id ?? row.ocr_id_clean ?? "");
+      setSelectedEmployeePk(re2?.id ?? null);
+      setSelectedCandidateIdx(null);
+      return;
+    }
+
+    const re2 = row.resolved_employee;
+    if (row.status === "resolved") {
+      setFinalName(re2?.full_name ?? row.ocr_name_raw ?? "");
+      setFinalId(re2?.employee_id ?? row.ocr_id_clean ?? "");
+      setSelectedEmployeePk(re2?.id ?? null);
+      setSelectedCandidateIdx(null);
+      return;
+    }
+
+    if (row.status === "needs_review") {
+      const c0 = Array.isArray(row.top_candidates)
+        ? row.top_candidates[0]
+        : null;
+      if (c0) {
+        setFinalName(
+          String(c0.full_name ?? "").trim() || (row.ocr_name_raw ?? ""),
+        );
+        setFinalId(String(c0.employee_id ?? row.ocr_id_clean ?? ""));
+        setSelectedCandidateIdx(0);
+        if (c0.id != null && c0.id !== undefined) {
+          setSelectedEmployeePk(c0.id);
+          return;
+        }
+        const emSid = c0.employee_id;
+        if (emSid) {
+          let cancelled = false;
+          (async () => {
+            try {
+              const digits = String(emSid).replace(/\D/g, "");
+              const { data } = await apiClient.get("/api/employees/search/", {
+                params: { q: digits || emSid },
+              });
+              const list = Array.isArray(data) ? data : [];
+              const exact = list.find((e) => e.employee_id === String(emSid));
+              if (!cancelled) setSelectedEmployeePk(exact?.id ?? null);
+            } catch {
+              if (!cancelled) setSelectedEmployeePk(null);
+            }
+          })();
+          return () => {
+            cancelled = true;
+          };
+        }
+        setSelectedEmployeePk(null);
+        return;
+      }
+    }
+
+    setFinalName(re2?.full_name ?? row.ocr_name_raw ?? "");
+    setFinalId(re2?.employee_id ?? row.ocr_id_clean ?? "");
+    setSelectedEmployeePk(re2?.id ?? null);
+    setSelectedCandidateIdx(null);
+  }, [
+    locked,
+    row.id,
+    row.status,
+    row.resolved_at,
+    row.resolved_employee?.id,
+    row.unresolvable,
+    row.ocr_name_raw,
+    row.ocr_id_clean,
+    row.top_candidates?.[0]?.id,
+    row.top_candidates?.[0]?.employee_id,
+    row.top_candidates?.[0]?.full_name,
+  ]);
 
   useEffect(() => {
     if (!justSaved) return undefined;
@@ -735,11 +830,60 @@ export default function DocumentsPage() {
   const [submitBusy, setSubmitBusy] = useState(false);
   const [addRowBusy, setAddRowBusy] = useState(false);
   const [reopenBusy, setReopenBusy] = useState(false);
+  const [filterMonthKey, setFilterMonthKey] = useState("all");
+  const [filterStatus, setFilterStatus] = useState("all");
 
   const sidebarBatches = useMemo(
     () => batches.filter((b) => Number(b.document_count) > 0),
     [batches],
   );
+
+  const monthFilterOptions = useMemo(() => {
+    const byKey = new Map();
+    for (const b of batches) {
+      const k = batchMonthKey(b);
+      if (!byKey.has(k)) byKey.set(k, b);
+    }
+    return Array.from(byKey.values()).sort(compareBatchesByMonthDesc);
+  }, [batches]);
+
+  const displayBatches = useMemo(() => {
+    return sidebarBatches
+      .map((batch) => {
+        const mk = batchMonthKey(batch);
+        if (filterMonthKey !== "all" && filterMonthKey !== mk) {
+          return null;
+        }
+        const raw = docsByBatch[batch.id];
+        const loading = Boolean(docsLoading[batch.id]);
+
+        if (filterStatus === "all") {
+          if (raw === undefined) {
+            return { batch, visibleDocs: undefined, loading };
+          }
+          const arr = Array.isArray(raw) ? raw : [];
+          if (!loading && arr.length === 0) return null;
+          return { batch, visibleDocs: arr, loading: false };
+        }
+
+        if (raw === undefined) {
+          return { batch, visibleDocs: undefined, loading: true };
+        }
+        const arr = Array.isArray(raw) ? raw : [];
+        const visibleDocs = arr.filter((d) =>
+          docMatchesStatusFilter(d, filterStatus),
+        );
+        if (!loading && visibleDocs.length === 0) return null;
+        return { batch, visibleDocs, loading: false };
+      })
+      .filter(Boolean);
+  }, [
+    sidebarBatches,
+    docsByBatch,
+    docsLoading,
+    filterMonthKey,
+    filterStatus,
+  ]);
 
   const loadBatches = useCallback(async () => {
     setBatchesError("");
@@ -778,12 +922,16 @@ export default function DocumentsPage() {
   }, [loadBatches]);
 
   useEffect(() => {
-    if (!sidebarBatches.length) return;
+    const valid = new Set(displayBatches.map((e) => e.batch.id));
     setOpenBatchIds((prev) => {
-      if (prev.size > 0) return prev;
-      return new Set([sidebarBatches[0].id]);
+      const next = new Set([...prev].filter((id) => valid.has(id)));
+      if (next.size > 0) return next;
+      if (displayBatches.length) {
+        return new Set([displayBatches[0].batch.id]);
+      }
+      return new Set();
     });
-  }, [sidebarBatches]);
+  }, [displayBatches]);
 
   useEffect(() => {
     openBatchIds.forEach((id) => {
@@ -792,6 +940,15 @@ export default function DocumentsPage() {
       }
     });
   }, [openBatchIds, batches, docsByBatch, docsLoading, loadBatchDocuments]);
+
+  useEffect(() => {
+    if (filterStatus === "all") return;
+    sidebarBatches.forEach((b) => {
+      if (docsByBatch[b.id] === undefined && !docsLoading[b.id]) {
+        loadBatchDocuments(b.id);
+      }
+    });
+  }, [filterStatus, sidebarBatches, docsByBatch, docsLoading, loadBatchDocuments]);
 
   const fetchDetail = useCallback(async (jobId) => {
     if (!jobId) {
@@ -1143,22 +1300,68 @@ export default function DocumentsPage() {
             {uploadBusy ? "…" : "Upload"}
           </button>
         </div>
+        <div className="documents-list-filters">
+          <label className="documents-list-filter-label" htmlFor="doc-filter-month">
+            <span className="documents-list-filter-sr">Month</span>
+            <select
+              id="doc-filter-month"
+              className="documents-list-filter-select"
+              value={filterMonthKey}
+              onChange={(e) => setFilterMonthKey(e.target.value)}
+            >
+              <option value="all">All months</option>
+              {monthFilterOptions.map((b) => {
+                const k = batchMonthKey(b);
+                return (
+                  <option key={k} value={k}>
+                    {formatMonthHeading(b)}
+                  </option>
+                );
+              })}
+            </select>
+          </label>
+          <label className="documents-list-filter-label" htmlFor="doc-filter-status">
+            <span className="documents-list-filter-sr">Status</span>
+            <select
+              id="doc-filter-status"
+              className="documents-list-filter-select"
+              value={filterStatus}
+              onChange={(e) => setFilterStatus(e.target.value)}
+            >
+              <option value="all">All statuses</option>
+              <option value="needs_review">Needs Review</option>
+              <option value="resolved">Resolved</option>
+              <option value="processing">Processing</option>
+              <option value="error">Error</option>
+            </select>
+          </label>
+        </div>
         <div className="documents-list-scroll">
           {batchesError ? (
             <div className="list-error">{batchesError}</div>
           ) : null}
-          {!batchesError && !sidebarBatches.length ? (
+          {!batchesError && !batches.length ? (
+            <div className="list-error">No month batches yet.</div>
+          ) : null}
+          {!batchesError && batches.length > 0 && !sidebarBatches.length ? (
+            <div className="list-error">No month batches with documents yet.</div>
+          ) : null}
+          {!batchesError &&
+          batches.length > 0 &&
+          sidebarBatches.length > 0 &&
+          !displayBatches.length ? (
             <div className="list-error">
-              {!batches.length
-                ? "No month batches yet."
-                : "No month batches with documents yet."}
+              No documents match the selected filters.
             </div>
           ) : null}
-          {sidebarBatches.map((batch) => {
+          {displayBatches.map((entry) => {
+            const { batch, visibleDocs, loading } = entry;
             const open = openBatchIds.has(batch.id);
-            const docs = docsByBatch[batch.id];
-            const loading = docsLoading[batch.id];
             const err = docsError[batch.id];
+            const batchLoading = loading || docsLoading[batch.id];
+            const metaCount =
+              visibleDocs != null ? visibleDocs.length : batch.document_count;
+            const showLoading = visibleDocs === undefined && batchLoading;
             return (
               <div key={batch.id} className="batch-block">
                 <button
@@ -1171,7 +1374,7 @@ export default function DocumentsPage() {
                     <span className="batch-chevron">{open ? "▾" : "▸"}</span>
                     <span style={{ flex: 1 }}>{formatMonthHeading(batch)}</span>
                     <span className="batch-summary-meta">
-                      {batch.document_count != null ? batch.document_count : "—"} docs
+                      {metaCount != null ? `${metaCount} docs` : "—"}
                     </span>
                   </div>
                 </button>
@@ -1187,12 +1390,12 @@ export default function DocumentsPage() {
                         Upload to month
                       </button>
                     </div>
-                    {loading ? (
+                    {showLoading ? (
                       <div className="list-error">Loading…</div>
                     ) : null}
                     {err ? <div className="list-error">{err}</div> : null}
-                    {docs && !loading
-                      ? docs.map((doc) => (
+                    {visibleDocs != null && !showLoading
+                      ? visibleDocs.map((doc) => (
                           <div
                             key={doc.id}
                             role="button"
@@ -1218,7 +1421,11 @@ export default function DocumentsPage() {
                           </div>
                         ))
                       : null}
-                    {docs && !docs.length && !loading && !err ? (
+                    {visibleDocs != null &&
+                    !visibleDocs.length &&
+                    !showLoading &&
+                    !err &&
+                    filterStatus === "all" ? (
                       <div className="list-error">No documents in this batch.</div>
                     ) : null}
                   </>
