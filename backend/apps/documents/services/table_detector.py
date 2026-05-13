@@ -95,6 +95,18 @@ def _union_inch_bbox(words: list[_AzureWord]) -> tuple[float, float, float, floa
     )
 
 
+def _cap_inch_bbox_height_from_bottom(
+    bbox: tuple[float, float, float, float],
+    max_height_inches: float,
+) -> tuple[float, float, float, float]:
+    """If union box is taller than ``max_height_inches``, clip from the bottom (lower max_y)."""
+    min_x, min_y, max_x, max_y = bbox
+    h = max_y - min_y
+    if h <= max_height_inches:
+        return bbox
+    return (min_x, min_y, max_x, min_y + max_height_inches)
+
+
 def _inch_bbox_to_crop_pixels(
     inch_bbox: tuple[float, float, float, float],
     dpi: float,
@@ -234,7 +246,7 @@ def detect_table_rows(
         y_high = mids[idx] if idx < len(mids) else float("inf")
         # Hard maximum cutoff for the table area to prevent the "WHAT IS THE WORST THING"
         # text block below the table from bleeding into the last row.
-        y_high = min(y_high, 8.8)
+        y_high = min(y_high, 8.5)
 
         # All words belong to exactly one row by these boundaries.
         band = [w for w in region if (y_low <= w.y_center < y_high)]
@@ -350,6 +362,9 @@ def detect_table_rows(
                 ocr_id_raw = digits6
                 id_words = [w for w in pool if w.idx in used_idxs]
 
+        if not ocr_name_raw.strip() and not ocr_id_raw.strip():
+            continue
+
         row_build.append(
             {
                 "row_index": idx,
@@ -366,6 +381,7 @@ def detect_table_rows(
     if pdf_path and job_id:
         page_img = _render_pdf_page1_pil(pdf_path, dpi=dpi)
     img_w, img_h = (page_img.size if page_img else (0, 0))
+    max_crop_height_in = 0.5
 
     for row in row_build:
         name_words: list[_AzureWord] = row.pop("_name_words")  # type: ignore[assignment]
@@ -378,12 +394,14 @@ def detect_table_rows(
         if page_img is not None:
             ub = _union_inch_bbox(name_words)
             if ub is not None:
+                ub = _cap_inch_bbox_height_from_bottom(ub, max_crop_height_in)
                 box = _inch_bbox_to_crop_pixels(ub, dpi, img_w, img_h, pad_px=10)
                 if box is not None:
                     name_crop_rel = _save_crop_png(page_img, box, job_id, ridx, "name")
 
             ub_id = _union_inch_bbox(id_words)
             if ub_id is not None:
+                ub_id = _cap_inch_bbox_height_from_bottom(ub_id, max_crop_height_in)
                 box_id = _inch_bbox_to_crop_pixels(ub_id, dpi, img_w, img_h, pad_px=10)
                 if box_id is not None:
                     id_crop_rel = _save_crop_png(page_img, box_id, job_id, ridx, "id")

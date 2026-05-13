@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import re
 from pathlib import Path
 
@@ -32,8 +33,24 @@ def _cell_int(value) -> int | None:
     return int(float(s))
 
 
+def _normalize_csv_row(row: dict) -> dict[str, str]:
+    """Strip header keys and values so 'Name ' / 'ID' still match."""
+    out: dict[str, str] = {}
+    for k, v in row.items():
+        if k is None:
+            continue
+        key = str(k).strip()
+        if not key:
+            continue
+        out[key] = "" if v is None else str(v).strip()
+    return out
+
+
 class Command(BaseCommand):
-    help = "Import employees from Excel (EmployeeID, EmployeeName, Department)."
+    help = (
+        "Import employees from Excel (EmployeeID, EmployeeName, Department), "
+        "or contractors from CSV (Name, ID) via --contractors."
+    )
 
     def add_arguments(self, parser):
         default_path = Path(settings.BASE_DIR).parent / "employees.xlsx"
@@ -43,8 +60,20 @@ class Command(BaseCommand):
             default=str(default_path),
             help=f"Path to Excel file (default: {default_path})",
         )
+        parser.add_argument(
+            "--contractors",
+            type=str,
+            default=None,
+            metavar="PATH",
+            help="Path to contractors CSV with columns Name and ID.",
+        )
 
     def handle(self, *args, **options):
+        contractors_path = options.get("contractors")
+        if contractors_path:
+            self._import_contractors(Path(contractors_path).resolve())
+            return
+
         path = Path(options["file"]).resolve()
         if not path.is_file():
             raise CommandError(f"File not found: {path}")
@@ -89,7 +118,7 @@ class Command(BaseCommand):
                 if dept_was_created:
                     depts_created += 1
 
-                obj, was_created = Employee.objects.update_or_create(
+                _, was_created = Employee.objects.update_or_create(
                     employee_id=emp_id_str,
                     defaults={
                         "full_name": name,
@@ -109,5 +138,64 @@ class Command(BaseCommand):
             self.style.SUCCESS(
                 f"Import complete: {created} created, {updated} updated, "
                 f"{depts_created} departments created."
+            )
+        )
+
+    def _import_contractors(self, path: Path) -> None:
+        if not path.is_file():
+            raise CommandError(f"File not found: {path}")
+
+        created = 0
+        updated = 0
+
+        with path.open(newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames is None:
+                raise CommandError("CSV has no header row.")
+            headers = [(h or "").strip() for h in reader.fieldnames]
+            if "Name" not in headers or "ID" not in headers:
+                raise CommandError(
+                    "CSV must include columns Name and ID. "
+                    f"Found: {reader.fieldnames!r}"
+                )
+
+            for raw in reader:
+                row = _normalize_csv_row(raw)
+                name = row.get("Name", "").strip()
+                id_raw = row.get("ID", "").strip()
+                if not name and not id_raw:
+                    continue
+                if not id_raw:
+                    self.stdout.write(
+                        self.style.WARNING(f"Skipping row with empty ID: {raw!r}")
+                    )
+                    continue
+
+                employee_id = str(id_raw).zfill(6)
+                if not name:
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"Skipping row with empty Name for ID {employee_id!r}"
+                        )
+                    )
+                    continue
+
+                _, was_created = Employee.objects.update_or_create(
+                    employee_id=employee_id,
+                    defaults={
+                        "full_name": name,
+                        "type": "contractor",
+                        "department": None,
+                        "is_active": True,
+                    },
+                )
+                if was_created:
+                    created += 1
+                else:
+                    updated += 1
+
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"{created} contractors created, {updated} updated"
             )
         )

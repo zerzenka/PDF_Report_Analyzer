@@ -27,6 +27,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "django_celery_beat",
     "corsheaders",
     "rest_framework",
     "apps.authentication",
@@ -107,6 +108,12 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+# Network folder watched by Celery Beat task ``scan_watch_folder`` (see apps.documents.tasks).
+WATCH_ROOT = os.environ.get(
+    "WATCH_ROOT",
+    r"I:\60 - Services\30 - BI\010 - Shared\HP_PDF_Analyzer",
+)
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

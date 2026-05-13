@@ -834,3 +834,47 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
+
+.row-review-empty-ocr-banner {
+  background: #fef9c3;
+  border: 1px solid #eab308;
+  color: #854d0e;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  margin-bottom: 0.75rem;
+}
+
+.row-unresolvable-badge {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #713f12;
+  background: #fde68a;
+  border-radius: 4px;
+  vertical-align: middle;
+}
+
+.btn-mark-unresolvable {
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+  padding: 0.45rem 0.9rem;
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.btn-mark-unresolvable:hover:not(:disabled) {
+  background: #fef3c7;
+}
+
+.btn-mark-unresolvable:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

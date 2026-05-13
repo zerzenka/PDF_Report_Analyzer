@@ -110,6 +110,7 @@ class DocumentRowSerializer(serializers.ModelSerializer):
             "resolved_employee",
             "resolved_manually",
             "added_manually",
+            "unresolvable",
             "resolved_at",
         )
 

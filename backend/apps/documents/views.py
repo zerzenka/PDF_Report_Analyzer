@@ -219,6 +219,11 @@ class DocumentViewSet(
     )
     def resolve_row(self, request, pk=None, row_id=None):
         job = self.get_object()
+        if job.status == AnalysisJob.Status.RESOLVED:
+            return Response(
+                {"detail": "Cannot change rows on a submitted document."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         try:
             row = DocumentRow.objects.get(pk=row_id, job=job)
         except DocumentRow.DoesNotExist:
@@ -228,12 +233,58 @@ class DocumentViewSet(
         ser.is_valid(raise_exception=True)
         emp = ser.validated_data["resolved_employee"]
 
+        row.unresolvable = False
         row.resolved_employee = emp
         row.status = DocumentRow.Status.RESOLVED
         row.resolved_manually = True
         row.resolved_at = timezone.now()
         row.save(
             update_fields=[
+                "unresolvable",
+                "resolved_employee",
+                "status",
+                "resolved_manually",
+                "resolved_at",
+            ]
+        )
+        return Response(DocumentRowSerializer(row).data)
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"rows/(?P<row_id>[0-9]+)/mark-unresolvable",
+    )
+    def mark_row_unresolvable(self, request, pk=None, row_id=None):
+        job = self.get_object()
+        if job.status == AnalysisJob.Status.RESOLVED:
+            return Response(
+                {"detail": "Cannot change rows on a submitted document."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            row = DocumentRow.objects.get(pk=row_id, job=job)
+        except DocumentRow.DoesNotExist:
+            raise NotFound("Row not found.")
+
+        if row.unresolvable and row.status == DocumentRow.Status.RESOLVED:
+            return Response(DocumentRowSerializer(row).data)
+        if (
+            row.status == DocumentRow.Status.RESOLVED
+            and row.resolved_employee_id is not None
+        ):
+            return Response(
+                {"detail": "Row is already resolved with an employee."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        row.unresolvable = True
+        row.resolved_employee = None
+        row.status = DocumentRow.Status.RESOLVED
+        row.resolved_manually = True
+        row.resolved_at = timezone.now()
+        row.save(
+            update_fields=[
+                "unresolvable",
                 "resolved_employee",
                 "status",
                 "resolved_manually",
@@ -249,21 +300,26 @@ class DocumentViewSet(
     )
     def delete_row(self, request, pk=None, row_id=None):
         job = self.get_object()
+        if job.status == AnalysisJob.Status.RESOLVED:
+            return Response(
+                {"detail": "Cannot change rows on a submitted document."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         try:
             row = DocumentRow.objects.get(pk=row_id, job=job)
         except DocumentRow.DoesNotExist:
             raise NotFound("Row not found.")
-        if not row.added_manually:
-            return Response(
-                {"detail": "Only manually added rows can be deleted."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         row.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=["post"], url_path="rows/add")
     def add_row(self, request, pk=None):
         job = self.get_object()
+        if job.status == AnalysisJob.Status.RESOLVED:
+            return Response(
+                {"detail": "Cannot change rows on a submitted document."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         ser = DocumentRowAddSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
@@ -299,6 +355,16 @@ class DocumentViewSet(
             )
 
         for row in rows:
+            if row.unresolvable:
+                if row.status != DocumentRow.Status.RESOLVED:
+                    return Response(
+                        {
+                            "detail": "Unresolvable rows must be marked resolved before submit.",
+                            "row_id": row.id,
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                continue
             if row.status != DocumentRow.Status.RESOLVED or row.resolved_employee_id is None:
                 return Response(
                     {
@@ -313,6 +379,8 @@ class DocumentViewSet(
 
         with transaction.atomic():
             for row in rows:
+                if row.unresolvable:
+                    continue
                 HPRecord.objects.get_or_create(
                     document_row=row,
                     defaults={

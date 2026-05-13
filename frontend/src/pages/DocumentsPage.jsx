@@ -277,6 +277,7 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
   const [searchLoading, setSearchLoading] = useState(false);
   const [resolveBusy, setResolveBusy] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [unresolvableBusy, setUnresolvableBusy] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
 
   const searchWrapRef = useRef(null);
@@ -284,12 +285,19 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
   const isResolved = row.status === "resolved";
   const isManual = row.added_manually;
   const locked = Boolean(documentLocked);
+  const ocrBothEmpty =
+    !String(row.ocr_name_raw ?? "").trim() &&
+    !String(row.ocr_id_raw ?? "").trim();
   const savedEmployeePk = row.resolved_employee?.id ?? null;
   const selectionChanged =
     !locked &&
-    savedEmployeePk != null &&
-    selectedEmployeePk != null &&
-    selectedEmployeePk !== savedEmployeePk;
+    (row.unresolvable && isResolved
+      ? Boolean(selectedEmployeePk)
+      : Boolean(
+          savedEmployeePk != null &&
+            selectedEmployeePk != null &&
+            selectedEmployeePk !== savedEmployeePk,
+        ));
 
   useEffect(() => {
     const re2 = row.resolved_employee;
@@ -301,7 +309,7 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
     setSearchResults([]);
     setSearchOpen(false);
     setJustSaved(false);
-  }, [row.id, row.status, row.resolved_at, row.resolved_employee?.id]);
+  }, [row.id, row.status, row.resolved_at, row.resolved_employee?.id, row.unresolvable]);
 
   useEffect(() => {
     if (!justSaved) return undefined;
@@ -433,9 +441,11 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
   }
 
   async function onDelete() {
-    if (!row.added_manually) return;
     if (locked) return;
-    if (!window.confirm("Delete this manually added row?")) return;
+    const msg = row.added_manually
+      ? "Delete this manually added row?"
+      : "Are you sure you want to delete this row? This cannot be undone.";
+    if (!window.confirm(msg)) return;
     setDeleteBusy(true);
     try {
       await apiClient.delete(`/api/documents/${jobId}/rows/${row.id}/`);
@@ -444,6 +454,23 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
       window.alert(e.response?.data?.detail || e.message || "Delete failed.");
     } finally {
       setDeleteBusy(false);
+    }
+  }
+
+  async function onMarkUnresolvable() {
+    if (locked || !ocrBothEmpty) return;
+    setUnresolvableBusy(true);
+    try {
+      await apiClient.post(
+        `/api/documents/${jobId}/rows/${row.id}/mark-unresolvable/`,
+      );
+      await onRefresh();
+    } catch (e) {
+      window.alert(
+        e.response?.data?.detail || e.message || "Could not mark row.",
+      );
+    } finally {
+      setUnresolvableBusy(false);
     }
   }
 
@@ -462,6 +489,12 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
       <div className="row-review-header">
         <strong>
           {rowLabel}
+          {row.unresolvable ? (
+            <span className="row-unresolvable-badge" title="Excluded from HP counts">
+              {" "}
+              Unresolvable
+            </span>
+          ) : null}
           {isResolved ? (
             <span className="row-resolved-check" title="Row resolved">
               {" "}
@@ -486,6 +519,12 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
           </>
         )}
       </div>
+
+      {ocrBothEmpty ? (
+        <div className="row-review-empty-ocr-banner" role="status">
+          No name or ID detected — delete this row or add person manually
+        </div>
+      ) : null}
 
       {isManual ? (
         <div className="row-review-crops">
@@ -619,7 +658,7 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
           disabled={
             locked ||
             resolveBusy ||
-            (savedEmployeePk != null && !selectionChanged)
+            (isResolved && !selectionChanged)
           }
           onClick={onResolve}
         >
@@ -628,6 +667,12 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
               "Saving…"
             ) : (
               "Resolving…"
+            )
+          ) : isResolved && row.unresolvable ? (
+            selectionChanged ? (
+              "Save assignment"
+            ) : (
+              "Assign employee"
             )
           ) : savedEmployeePk != null ? (
             selectionChanged ? (
@@ -646,16 +691,24 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
         <button
           type="button"
           className="btn-delete-row"
-          disabled={locked || !row.added_manually || deleteBusy}
-          title={
-            row.added_manually
-              ? "Delete this manually added row"
-              : "Only manually added rows can be deleted"
-          }
+          disabled={locked || deleteBusy}
+          title="Delete this row"
           onClick={onDelete}
         >
           {deleteBusy ? "…" : "Delete"}
         </button>
+        {ocrBothEmpty && !locked && !row.unresolvable && !isResolved ? (
+          <button
+            type="button"
+            className="btn-mark-unresolvable"
+            disabled={unresolvableBusy}
+            onClick={() => {
+              void onMarkUnresolvable();
+            }}
+          >
+            {unresolvableBusy ? "…" : "Mark as unresolvable"}
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -682,6 +735,11 @@ export default function DocumentsPage() {
   const [submitBusy, setSubmitBusy] = useState(false);
   const [addRowBusy, setAddRowBusy] = useState(false);
   const [reopenBusy, setReopenBusy] = useState(false);
+
+  const sidebarBatches = useMemo(
+    () => batches.filter((b) => Number(b.document_count) > 0),
+    [batches],
+  );
 
   const loadBatches = useCallback(async () => {
     setBatchesError("");
@@ -720,12 +778,12 @@ export default function DocumentsPage() {
   }, [loadBatches]);
 
   useEffect(() => {
-    if (!batches.length) return;
+    if (!sidebarBatches.length) return;
     setOpenBatchIds((prev) => {
       if (prev.size > 0) return prev;
-      return new Set([batches[0].id]);
+      return new Set([sidebarBatches[0].id]);
     });
-  }, [batches]);
+  }, [sidebarBatches]);
 
   useEffect(() => {
     openBatchIds.forEach((id) => {
@@ -1010,8 +1068,8 @@ export default function DocumentsPage() {
                     </p>
                   ) : (
                     <p className="submit-hint submit-hint--pending">
-                      {resolvedCount} of {total} rows resolved — resolve all rows
-                      to submit
+                      {resolvedCount} of {total} rows resolved — resolve each row,
+                      mark blank rows unresolvable, or delete extras before submit
                     </p>
                   )}
                   <button
@@ -1089,10 +1147,14 @@ export default function DocumentsPage() {
           {batchesError ? (
             <div className="list-error">{batchesError}</div>
           ) : null}
-          {!batches.length && !batchesError ? (
-            <div className="list-error">No month batches yet.</div>
+          {!batchesError && !sidebarBatches.length ? (
+            <div className="list-error">
+              {!batches.length
+                ? "No month batches yet."
+                : "No month batches with documents yet."}
+            </div>
           ) : null}
-          {batches.map((batch) => {
+          {sidebarBatches.map((batch) => {
             const open = openBatchIds.has(batch.id);
             const docs = docsByBatch[batch.id];
             const loading = docsLoading[batch.id];

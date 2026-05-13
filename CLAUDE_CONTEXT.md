@@ -47,7 +47,8 @@ Prefix rules:
 
 1. **Focal point** (department data entry person) logs in
 2. Selects or creates a **month batch** (e.g. "05-2026" for May 2026)
-3. **Uploads one or more PDFs** into that month batch
+3. **Uploads one or more PDFs** into that month batch — or PDFs appear under the
+   network watch folder (see below) and Celery ingests them automatically
 4. For each PDF, a **Celery task** runs:
    a. Azure Document Intelligence OCR reads the full page
    b. The team member table is detected and each row is cropped:
@@ -142,7 +143,7 @@ backend/
 │   │   ├── serializers.py
 │   │   ├── views.py
 │   │   ├── urls.py
-│   │   ├── tasks.py              # process_pdf_task (Celery)
+│   │   ├── tasks.py              # process_pdf_task, scan_watch_folder (Celery Beat)
 │   │   ├── consumers.py          # WebSocket job progress
 │   │   └── services/
 │   │       ├── ocr_service.py    # Azure Document Intelligence wrapper
@@ -529,6 +530,9 @@ CELERY_RESULT_BACKEND=redis://localhost:6379/0
 # JWT
 JWT_ACCESS_TOKEN_LIFETIME_MINUTES=60
 JWT_REFRESH_TOKEN_LIFETIME_DAYS=7
+
+# Folder watcher (Celery Beat scans every 5 minutes; layout: WATCH_ROOT/<Department>/<MM-YYYY>/*.pdf)
+WATCH_ROOT="I:\60 - Services\30 - BI\010 - Shared\HP_PDF_Analyzer"
 
 # Source databases (read-only, provided by IT — leave blank during dev)
 EMPLOYEE_DB_NAME=

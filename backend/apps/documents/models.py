@@ -98,6 +98,7 @@ class DocumentRow(models.Model):
     )
     resolved_manually = models.BooleanField(default=False)
     added_manually = models.BooleanField(default=False)  # added outside table
+    unresolvable = models.BooleanField(default=False)  # blank row / excluded from HP counts
     resolved_at = models.DateTimeField(null=True)
 
     class Meta:
