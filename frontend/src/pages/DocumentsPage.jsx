@@ -72,6 +72,27 @@ function formatMatchMethod(m) {
   return map[m] || m;
 }
 
+/** API may return JSONField as array or (in edge cases) a JSON string. */
+function normalizeTopCandidates(raw) {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+/** Canonical employee display name from API (never OCR). */
+function employeeDbName(emp) {
+  if (!emp || typeof emp !== "object") return "";
+  return String(emp.full_name ?? emp.name ?? "").trim();
+}
+
 function patchDocumentInLists(job, setDocsByBatch) {
   if (!job?.id) return;
   const rows = Array.isArray(job.rows) ? job.rows : [];
@@ -287,16 +308,33 @@ function IconSettings() {
 
 function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
   const re = row.resolved_employee;
-  const [finalName, setFinalName] = useState(
-    () => re?.full_name ?? row.ocr_name_raw ?? "",
-  );
-  const [finalId, setFinalId] = useState(
-    () => re?.employee_id ?? row.ocr_id_clean ?? "",
-  );
+  const topCandidatesList = normalizeTopCandidates(row.top_candidates);
+  const [finalName, setFinalName] = useState(() => {
+    if (row.resolved_employee?.full_name) {
+      return String(row.resolved_employee.full_name).trim();
+    }
+    const raw0 = row.top_candidates?.[0];
+    if (raw0?.full_name) return String(raw0.full_name).trim();
+    const tc0 = normalizeTopCandidates(row.top_candidates)[0];
+    if (tc0?.full_name) return String(tc0.full_name).trim();
+    return "";
+  });
+  const [finalId, setFinalId] = useState(() => {
+    if (row.resolved_employee?.employee_id) {
+      return String(row.resolved_employee.employee_id);
+    }
+    const raw0 = row.top_candidates?.[0];
+    if (raw0?.employee_id) return String(raw0.employee_id);
+    const tc0 = normalizeTopCandidates(row.top_candidates)[0];
+    if (tc0?.employee_id) return String(tc0.employee_id);
+    return "";
+  });
   const [selectedEmployeePk, setSelectedEmployeePk] = useState(
-    () => re?.id ?? null,
+    () => re?.id ?? topCandidatesList[0]?.id ?? null,
   );
-  const [selectedCandidateIdx, setSelectedCandidateIdx] = useState(null);
+  const [selectedCandidateIdx, setSelectedCandidateIdx] = useState(() =>
+    row.status === "needs_review" && topCandidatesList[0] ? 0 : null,
+  );
   const [idSearchQuery, setIdSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -333,31 +371,31 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
 
     if (locked) {
       const re2 = row.resolved_employee;
-      setFinalName(re2?.full_name ?? row.ocr_name_raw ?? "");
-      setFinalId(re2?.employee_id ?? row.ocr_id_clean ?? "");
-      setSelectedEmployeePk(re2?.id ?? null);
       setSelectedCandidateIdx(null);
+      if (re2) {
+        setFinalName(employeeDbName(re2));
+        setFinalId(String(re2.employee_id ?? row.ocr_id_clean ?? ""));
+        setSelectedEmployeePk(re2.id);
+      }
       return;
     }
 
     const re2 = row.resolved_employee;
     if (row.status === "resolved") {
-      setFinalName(re2?.full_name ?? row.ocr_name_raw ?? "");
-      setFinalId(re2?.employee_id ?? row.ocr_id_clean ?? "");
-      setSelectedEmployeePk(re2?.id ?? null);
       setSelectedCandidateIdx(null);
+      if (re2) {
+        setFinalName(employeeDbName(re2));
+        setFinalId(String(re2.employee_id ?? row.ocr_id_clean ?? ""));
+        setSelectedEmployeePk(re2.id);
+      } else {
+        setSelectedEmployeePk(null);
+      }
       return;
     }
 
     if (row.status === "needs_review") {
-      const c0 = Array.isArray(row.top_candidates)
-        ? row.top_candidates[0]
-        : null;
+      const c0 = topCandidatesList[0] ?? null;
       if (c0) {
-        setFinalName(
-          String(c0.full_name ?? "").trim() || (row.ocr_name_raw ?? ""),
-        );
-        setFinalId(String(c0.employee_id ?? row.ocr_id_clean ?? ""));
         setSelectedCandidateIdx(0);
         if (c0.id != null && c0.id !== undefined) {
           setSelectedEmployeePk(c0.id);
@@ -388,22 +426,28 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
       }
     }
 
-    setFinalName(re2?.full_name ?? row.ocr_name_raw ?? "");
-    setFinalId(re2?.employee_id ?? row.ocr_id_clean ?? "");
-    setSelectedEmployeePk(re2?.id ?? null);
     setSelectedCandidateIdx(null);
+    if (re2) {
+      setFinalName(employeeDbName(re2));
+      setFinalId(String(re2.employee_id ?? row.ocr_id_clean ?? ""));
+      setSelectedEmployeePk(re2.id);
+    } else {
+      setSelectedEmployeePk(null);
+    }
   }, [
     locked,
     row.id,
     row.status,
     row.resolved_at,
     row.resolved_employee?.id,
+    row.resolved_employee?.full_name,
     row.unresolvable,
-    row.ocr_name_raw,
     row.ocr_id_clean,
-    row.top_candidates?.[0]?.id,
-    row.top_candidates?.[0]?.employee_id,
-    row.top_candidates?.[0]?.full_name,
+    row.top_candidates,
+    topCandidatesList[0]?.id,
+    topCandidatesList[0]?.employee_id,
+    topCandidatesList[0]?.full_name,
+    topCandidatesList[0]?.name,
   ]);
 
   useEffect(() => {
@@ -455,9 +499,7 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
     };
   }, [idSearchQuery]);
 
-  const top3 = Array.isArray(row.top_candidates)
-    ? row.top_candidates.slice(0, 3)
-    : [];
+  const top3 = topCandidatesList.slice(0, 3);
 
   const rowLabel = Number.isFinite(Number(row.row_index))
     ? `Row ${Number(row.row_index) + 1}`
@@ -468,6 +510,7 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
   async function pickCandidate(c, idx) {
     if (locked) return;
     let pk = c.id ?? null;
+    let nameForFinal = employeeDbName(c);
     if (pk == null && c.employee_id) {
       try {
         const digits = String(c.employee_id).replace(/\D/g, "");
@@ -477,12 +520,13 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
         const list = Array.isArray(data) ? data : [];
         const exact = list.find((e) => e.employee_id === String(c.employee_id));
         pk = exact?.id ?? null;
+        if (exact) nameForFinal = employeeDbName(exact) || nameForFinal;
       } catch {
         pk = null;
       }
     }
     setSelectedEmployeePk(pk);
-    setFinalName(c.full_name ?? "");
+    setFinalName(nameForFinal);
     setFinalId(c.employee_id ?? "");
     setSelectedCandidateIdx(idx);
     setSearchOpen(false);
@@ -491,7 +535,7 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
   function pickSearchResult(emp) {
     if (locked) return;
     setSelectedEmployeePk(emp.id);
-    setFinalName(emp.full_name ?? "");
+    setFinalName(employeeDbName(emp));
     setFinalId(emp.employee_id ?? "");
     setSelectedCandidateIdx(null);
     setSearchOpen(false);
