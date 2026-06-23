@@ -57,6 +57,15 @@ function docMatchesStatusFilter(doc, filterStatus) {
   return doc.status === filterStatus;
 }
 
+/** Task leader first (row_index -1), then team rows by index. */
+function sortReviewRows(rows) {
+  return [...rows].sort((a, b) => {
+    if (a.is_task_leader && !b.is_task_leader) return -1;
+    if (!a.is_task_leader && b.is_task_leader) return 1;
+    return (a.row_index ?? 0) - (b.row_index ?? 0);
+  });
+}
+
 function truncateFilename(name, max = 42) {
   if (!name || name.length <= max) return name || "";
   return `${name.slice(0, max - 1)}…`;
@@ -348,6 +357,7 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
 
   const isResolved = row.status === "resolved";
   const isManual = row.added_manually;
+  const isTaskLeader = Boolean(row.is_task_leader);
   const locked = Boolean(documentLocked);
   const ocrBothEmpty =
     !String(row.ocr_name_raw ?? "").trim() &&
@@ -501,9 +511,11 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
 
   const top3 = topCandidatesList.slice(0, 3);
 
-  const rowLabel = Number.isFinite(Number(row.row_index))
-    ? `Row ${Number(row.row_index) + 1}`
-    : `Row ${row.row_index}`;
+  const rowLabel = isTaskLeader
+    ? "Task Leader"
+    : Number.isFinite(Number(row.row_index))
+      ? `Row ${Number(row.row_index) + 1}`
+      : `Row ${row.row_index}`;
 
   const conf = Number(row.confidence ?? 0).toFixed(1);
 
@@ -624,10 +636,20 @@ function RowReviewCard({ row, jobId, onRefresh, documentLocked }) {
   }
 
   return (
-    <div className={`row-review-card${isManual ? " row-review-card--manual" : ""}`}>
+    <div
+      className={`row-review-card${
+        isManual ? " row-review-card--manual" : ""
+      }${isTaskLeader ? " row-review-card--task-leader" : ""}`}
+    >
       <div className="row-review-header">
         <strong>
           {rowLabel}
+          {isTaskLeader ? (
+            <span className="row-task-leader-badge" title="Form task leader">
+              {" "}
+              ★ Leader
+            </span>
+          ) : null}
           {row.unresolvable ? (
             <span className="row-unresolvable-badge" title="Excluded from HP counts">
               {" "}
@@ -1142,7 +1164,9 @@ export default function DocumentsPage() {
     }
 
     if (detail.status === "needs_review" || detail.status === "resolved") {
-      const rows = Array.isArray(detail.rows) ? detail.rows : [];
+      const rows = sortReviewRows(
+        Array.isArray(detail.rows) ? detail.rows : [],
+      );
       const total = rows.length;
       const resolvedCount = rows.filter((r) => r.status === "resolved").length;
       const allRowsResolved = total > 0 && resolvedCount === total;

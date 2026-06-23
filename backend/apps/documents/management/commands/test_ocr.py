@@ -122,11 +122,15 @@ class Command(BaseCommand):
                 ocr_id_raw = str(row.get("ocr_id_raw") or "").strip()
                 ocr_id_clean = str(row.get("ocr_id_clean") or "").strip()
 
+                if not ocr_name_raw and not ocr_id_raw:
+                    continue
+
                 m = match_row(ocr_name_raw, ocr_id_raw)
 
                 dr = DocumentRow(
                     job=job,
                     row_index=int(row.get("row_index", idx)),
+                    is_task_leader=bool(row.get("is_task_leader", False)),
                     ocr_name_raw=ocr_name_raw,
                     ocr_id_raw=ocr_id_raw,
                     ocr_id_clean=ocr_id_clean or str(m.get("clean_id") or ""),

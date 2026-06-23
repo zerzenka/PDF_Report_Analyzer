@@ -168,6 +168,264 @@ def _save_crop_png(
     return f"crops/{fname}"
 
 
+def _find_task_leader_anchor(words: list[_AzureWord]) -> _AzureWord | None:
+    """Locate the printed ``Task Leader`` label (single phrase or adjacent tokens)."""
+    for w in words:
+        if w.text.strip().lower().replace(" ", "") == "taskleader":
+            return w
+        if "task" in w.text.strip().lower() and "leader" in w.text.strip().lower():
+            return w
+
+    for w in words:
+        if w.text.strip().upper() != "TASK":
+            continue
+        for w2 in words:
+            if w2.text.strip().upper() != "LEADER":
+                continue
+            if abs(w2.y_center - w.y_center) > 0.25:
+                continue
+            if w2.x_left < w.x_left:
+                continue
+            if (w2.x_left - w.x_right) > 0.55:
+                continue
+            return w2
+    return None
+
+
+def _find_header_said_label(band: list[_AzureWord], *, max_x: float = 10.0) -> _AzureWord | None:
+    """``SA ID`` label in the DATE/TIME header band (not the team-member table)."""
+    for w in band:
+        if w.x_left > max_x:
+            continue
+        tt = w.text.strip().upper().replace(" ", "")
+        if "SAID" in tt or tt == "ID":
+            return w
+
+    for w in band:
+        if w.text.strip().upper() != "SA" or w.x_left > max_x:
+            continue
+        for w2 in band:
+            if w2.text.strip().upper() != "ID":
+                continue
+            if abs(w2.y_center - w.y_center) > 0.18:
+                continue
+            if not (0.0 < (w2.x_left - w.x_right) < 0.45):
+                continue
+            return w2
+    return None
+
+
+def _extract_id_from_band(
+    id_band: list[_AzureWord],
+    label: _AzureWord,
+    used_id_word_idxs: set[int],
+) -> tuple[str, str, list[_AzureWord]]:
+    """Reuse table-row ID logic for a single SA ID label in ``id_band``."""
+    pool = [
+        w
+        for w in id_band
+        if w.idx not in used_id_word_idxs
+        and any(ch.isdigit() for ch in w.text)
+        and (
+            (w.x_left > label.x_left)
+            or (
+                (0.0 < (w.y_center - label.y_center) <= 0.35)
+                and (w.x_left > label.x_left)
+            )
+        )
+    ]
+    pool.sort(key=lambda w: (w.x_left, abs(w.y_center - label.y_center)))
+
+    best: tuple[set[int], str, float, float] | None = None
+    for i, w in enumerate(pool):
+        if w.idx in used_id_word_idxs:
+            continue
+        digits = _digits_only(w.text)
+        if not digits:
+            continue
+        used = {w.idx}
+        x0 = w.x_left
+        yc = w.y_center
+
+        for nxt in pool[i + 1 : i + 6]:
+            if nxt.idx in used_id_word_idxs:
+                continue
+            if abs(nxt.y_center - yc) > 0.15:
+                continue
+            if (nxt.x_left - x0) > 1.2:
+                break
+            d2 = _digits_only(nxt.text)
+            if not d2:
+                continue
+            digits += d2
+            used.add(nxt.idx)
+            if len(digits) >= 6:
+                break
+
+        if len(digits) == 6:
+            best = (used, digits, x0, yc)
+            break
+
+        single = _clean_id_digits(w.text)
+        if single:
+            best = ({w.idx}, single, x0, yc)
+            break
+
+    if not best:
+        return "", "", []
+
+    used_idxs, digits6, *_ = best
+    used_id_word_idxs.update(used_idxs)
+    id_words = [w for w in pool if w.idx in used_idxs]
+    return digits6, digits6, id_words
+
+
+def _detect_task_leader_row(
+    words: list[_AzureWord],
+    used_id_word_idxs: set[int],
+) -> dict[str, Any] | None:
+    """
+    Task Leader + SA ID in the header (DATE & TIME / SHIFT band), above the team table.
+
+    Returns a row dict with ``row_index=-1``, ``is_task_leader=True``, or None.
+    """
+    anchor = _find_task_leader_anchor(words)
+    if anchor is None:
+        return None
+
+    y_slack = 0.18
+    y_name_slack = 0.14
+    # Header only — team table starts around y > 6.0 on the right side.
+    header_band = [
+        w
+        for w in words
+        if abs(w.y_center - anchor.y_center) <= y_slack and w.y_top < 5.5
+    ]
+    header_band.sort(key=lambda w: (w.x_left, w.y_center))
+
+    id_label = _find_header_said_label(header_band, max_x=10.0)
+
+    name_x_min = max(1.25, anchor.x_right + 0.05)
+    name_x_max = 4.25
+    if id_label is not None:
+        name_x_max = min(name_x_max, id_label.x_left - 0.08)
+
+    exclude_tl = {
+        "TASK",
+        "LEADER",
+        "SA",
+        "ID",
+        "SAID",
+        "SIGNATURE",
+        "DATE",
+        "TIME",
+        "SHIFT",
+        "SIGN",
+        "PRINTED",
+        "SAMPLING",
+        "FURNACE",
+        "TITLE",
+    }
+
+    name_tokens: list[str] = []
+    name_words: list[_AzureWord] = []
+    for w in header_band:
+        if abs(w.y_center - anchor.y_center) > y_name_slack:
+            continue
+        if not (name_x_min <= w.x_left <= name_x_max):
+            continue
+        t = w.text.strip()
+        if not t:
+            continue
+        tu = t.upper().replace(" ", "").replace("/", "").replace(".", "")
+        if tu in exclude_tl or any(ex in tu for ex in ("NO", "TITLE", "SOP")):
+            continue
+        if len(t) == 1 and t.isalpha():
+            continue
+        if any(ch.isdigit() for ch in t):
+            continue
+        if "/" in t or "." in t:
+            continue
+        name_tokens.append(t)
+        name_words.append(w)
+    ocr_name_raw = " ".join(name_tokens).strip()
+
+    ocr_id_raw = ""
+    ocr_id_clean = ""
+    id_words: list[_AzureWord] = []
+    if id_label is not None:
+        id_band = [
+            w
+            for w in words
+            if abs(w.y_center - id_label.y_center) <= (y_slack + 0.12)
+            and w.y_top < 5.5
+        ]
+        ocr_id_raw, ocr_id_clean, id_words = _extract_id_from_band(
+            id_band, id_label, used_id_word_idxs
+        )
+
+    if not ocr_name_raw.strip() and not ocr_id_raw.strip():
+        return None
+
+    return {
+        "row_index": -1,
+        "is_task_leader": True,
+        "ocr_name_raw": ocr_name_raw,
+        "ocr_id_raw": ocr_id_raw,
+        "ocr_id_clean": ocr_id_clean,
+        "_name_words": name_words,
+        "_id_words": id_words,
+    }
+
+
+def _rows_to_output(
+    row_build: list[dict[str, Any]],
+    *,
+    pdf_path: str | None,
+    job_id: str | None,
+    dpi: float,
+) -> list[dict[str, Any]]:
+    """Generate crop PNGs and strip internal ``_name_words`` / ``_id_words`` keys."""
+    out: list[dict[str, Any]] = []
+    page_img = None
+    if pdf_path and job_id:
+        page_img = _render_pdf_page1_pil(pdf_path, dpi=dpi)
+    img_w, img_h = (page_img.size if page_img else (0, 0))
+    max_crop_height_in = 0.5
+
+    for row in row_build:
+        name_words: list[_AzureWord] = row.pop("_name_words")  # type: ignore[assignment]
+        id_words: list[_AzureWord] = row.pop("_id_words")  # type: ignore[assignment]
+        ridx = int(row["row_index"])
+
+        name_crop_rel: str | None = None
+        id_crop_rel: str | None = None
+
+        if page_img is not None and job_id is not None:
+            ub = _union_inch_bbox(name_words)
+            if ub is not None:
+                ub = _cap_inch_bbox_height_from_bottom(ub, max_crop_height_in)
+                box = _inch_bbox_to_crop_pixels(ub, dpi, img_w, img_h, pad_px=10)
+                if box is not None:
+                    name_crop_rel = _save_crop_png(page_img, box, job_id, ridx, "name")
+
+            ub_id = _union_inch_bbox(id_words)
+            if ub_id is not None:
+                ub_id = _cap_inch_bbox_height_from_bottom(ub_id, max_crop_height_in)
+                box_id = _inch_bbox_to_crop_pixels(ub_id, dpi, img_w, img_h, pad_px=10)
+                if box_id is not None:
+                    id_crop_rel = _save_crop_png(page_img, box_id, job_id, ridx, "id")
+
+        if name_crop_rel:
+            row["name_crop_rel"] = name_crop_rel
+        if id_crop_rel:
+            row["id_crop_rel"] = id_crop_rel
+
+        out.append(row)
+
+    return out
+
+
 def detect_table_rows(
     azure_result: dict,
     pdf_path: str | None = None,
@@ -202,7 +460,15 @@ def detect_table_rows(
     if not words:
         return []
 
-    # Region filter (in inches)
+    # Each ID token may only be used once across task leader + table rows.
+    used_id_word_idxs: set[int] = set()
+
+    row_build: list[dict[str, Any]] = []
+    tl_row = _detect_task_leader_row(words, used_id_word_idxs)
+    if tl_row is not None:
+        row_build.append(tl_row)
+
+    # Region filter (in inches) — team member table
     region = [w for w in words if (w.x_left > 7.5 and w.y_top > 6.0)]
 
     # Row anchors (NAME labels)
@@ -213,15 +479,12 @@ def detect_table_rows(
     ]
     anchors.sort(key=lambda w: w.y_center)
     if not anchors:
-        return []
+        return _rows_to_output(row_build, pdf_path=pdf_path, job_id=job_id, dpi=dpi)
 
     # Compute row boundaries as midpoints between consecutive NAME anchors.
     mids: list[float] = []
     for a, b in zip(anchors, anchors[1:]):
         mids.append((a.y_center + b.y_center) / 2.0)
-
-    # Each ID token may only be used once across rows.
-    used_id_word_idxs: set[int] = set()
 
     exclude_name = {
         "TEAM",
@@ -240,7 +503,6 @@ def detect_table_rows(
         "THAT",
     }
 
-    row_build: list[dict[str, Any]] = []
     for idx, anchor in enumerate(anchors[:max_rows]):
         y_low = mids[idx - 1] if idx > 0 else float("-inf")
         y_high = mids[idx] if idx < len(mids) else float("inf")
@@ -368,6 +630,7 @@ def detect_table_rows(
         row_build.append(
             {
                 "row_index": idx,
+                "is_task_leader": False,
                 "ocr_name_raw": ocr_name_raw,
                 "ocr_id_raw": ocr_id_raw,
                 "ocr_id_clean": ocr_id_clean,
@@ -376,41 +639,4 @@ def detect_table_rows(
             }
         )
 
-    out: list[dict[str, Any]] = []
-    page_img = None
-    if pdf_path and job_id:
-        page_img = _render_pdf_page1_pil(pdf_path, dpi=dpi)
-    img_w, img_h = (page_img.size if page_img else (0, 0))
-    max_crop_height_in = 0.5
-
-    for row in row_build:
-        name_words: list[_AzureWord] = row.pop("_name_words")  # type: ignore[assignment]
-        id_words: list[_AzureWord] = row.pop("_id_words")  # type: ignore[assignment]
-        ridx = int(row["row_index"])
-
-        name_crop_rel: str | None = None
-        id_crop_rel: str | None = None
-
-        if page_img is not None:
-            ub = _union_inch_bbox(name_words)
-            if ub is not None:
-                ub = _cap_inch_bbox_height_from_bottom(ub, max_crop_height_in)
-                box = _inch_bbox_to_crop_pixels(ub, dpi, img_w, img_h, pad_px=10)
-                if box is not None:
-                    name_crop_rel = _save_crop_png(page_img, box, job_id, ridx, "name")
-
-            ub_id = _union_inch_bbox(id_words)
-            if ub_id is not None:
-                ub_id = _cap_inch_bbox_height_from_bottom(ub_id, max_crop_height_in)
-                box_id = _inch_bbox_to_crop_pixels(ub_id, dpi, img_w, img_h, pad_px=10)
-                if box_id is not None:
-                    id_crop_rel = _save_crop_png(page_img, box_id, job_id, ridx, "id")
-
-        if name_crop_rel:
-            row["name_crop_rel"] = name_crop_rel
-        if id_crop_rel:
-            row["id_crop_rel"] = id_crop_rel
-
-        out.append(row)
-
-    return out
+    return _rows_to_output(row_build, pdf_path=pdf_path, job_id=job_id, dpi=dpi)

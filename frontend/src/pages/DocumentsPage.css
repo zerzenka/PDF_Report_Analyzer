@@ -462,6 +462,25 @@
   border-style: dashed;
 }
 
+.row-review-card--task-leader {
+  border-left: 3px solid #6366f1;
+  background: linear-gradient(90deg, #eef2ff 0%, #fff 28%);
+}
+
+.row-task-leader-badge {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #3730a3;
+  background: #e0e7ff;
+  border-radius: 4px;
+  vertical-align: middle;
+}
+
 .detail-empty {
   color: #64748b;
   height: 100%;
